@@ -1,0 +1,26 @@
+{
+  "name": "orders-source",
+  "config": {
+    "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
+    "tasks.max": "1",
+    "database.hostname": "postgres",
+    "database.port": "5432",
+    "database.user": "erp",
+    "database.password": "erp",
+    "database.dbname": "erp",
+    "plugin.name": "pgoutput",
+    "publication.name": "dbz_orders_pub",
+    "publication.autocreate.mode": "disabled",
+    "slot.name": "dbz_orders_slot",
+    "topic.prefix": "erp",
+    "table.include.list": "public.orders",
+    "decimal.handling.mode": "string",
+    "time.precision.mode": "connect",
+    "tombstones.on.delete": "true",
+    "snapshot.mode": "initial",
+    "key.converter": "io.confluent.connect.avro.AvroConverter",
+    "key.converter.schema.registry.url": "http://schema-registry:8081",
+    "value.converter": "io.confluent.connect.avro.AvroConverter",
+    "value.converter.schema.registry.url": "http://schema-registry:8081"
+  }
+}

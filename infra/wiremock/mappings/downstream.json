@@ -1,0 +1,4 @@
+{
+  "request": { "method": "POST", "url": "/downstream" },
+  "response": { "status": 200, "headers": { "Content-Type": "application/json" }, "jsonBody": { "status": "ok" } }
+}

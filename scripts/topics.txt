@@ -1,0 +1,8 @@
+# name partitions retention_ms   (reused for MSK later)
+sf.change-events.raw 3 604800000
+erp.public.orders 3 604800000
+integration.account.v1 3 604800000
+integration.order.v1 3 604800000
+integration.retry.1m 3 604800000
+integration.retry.10m 3 604800000
+integration.dlq 3 1209600000

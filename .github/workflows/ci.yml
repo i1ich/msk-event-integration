@@ -169,8 +169,10 @@ jobs:
       # repo root with a comment explaining why and an expiry date, e.g.
       #   # CVE-2024-12345 not reachable: only used in tests. Review by 2026-12-31.
       #   CVE-2024-12345
+      # Pinned to a full commit SHA, not a tag: trivy-action tags were rewritten/removed after a 2026
+      # supply-chain incident (the old 0.28.0 tag no longer exists). Update deliberately, SHA + comment together.
       - name: Trivy filesystem scan
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           scan-type: fs
           scan-ref: .

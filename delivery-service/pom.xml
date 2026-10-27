@@ -53,7 +53,6 @@
   </dependencies>
 
   <build>
-    <finalName>delivery-service</finalName>
     <plugins>
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
@@ -65,7 +64,8 @@
               <goal>shade</goal>
             </goals>
             <configuration>
-              <shadedArtifactAttached>false</shadedArtifactAttached>
+              <!-- Runnable fat jar as a separate file; the main artifact stays thin so other modules (integration-tests) can depend on it. -->
+              <outputFile>${project.build.directory}/${project.artifactId}.jar</outputFile>
               <createDependencyReducedPom>false</createDependencyReducedPom>
               <transformers>
                 <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>

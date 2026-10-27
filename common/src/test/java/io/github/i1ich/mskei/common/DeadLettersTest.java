@@ -56,7 +56,8 @@ class DeadLettersTest {
                 .containsEntry("schema.registry.url", "http://sr:8081")
                 .containsEntry("auto.register.schemas", true);
         assertThat(SchemaRegistryConfig.from(Map.of("SCHEMA_REGISTRY_URL", "u", "SCHEMA_AUTO_REGISTER", "false")))
-                .containsEntry("auto.register.schemas", false);
+                .containsEntry("auto.register.schemas", false)
+                .containsEntry("use.latest.version", true);
         assertThatThrownBy(() -> SchemaRegistryConfig.from(Map.of())).isInstanceOf(IllegalStateException.class);
     }
 }

@@ -31,7 +31,15 @@ public final class SchemaRegistryConfig {
         }
         Map<String, Object> cfg = new HashMap<>();
         cfg.put("schema.registry.url", url);
-        cfg.put("auto.register.schemas", Boolean.parseBoolean(env.getOrDefault(ENV_AUTO_REGISTER, "true")));
+        boolean autoRegister = Boolean.parseBoolean(env.getOrDefault(ENV_AUTO_REGISTER, "true"));
+        cfg.put("auto.register.schemas", autoRegister);
+        if (!autoRegister) {
+            // Schemas are registered from schemas/*.avsc by CI / register-schemas.sh. The Avro-generated classes
+            // carry extra properties (avro.java.string), so their schema text never matches the registered one
+            // exactly and a plain lookup fails with 40403. Use the latest registered version instead; the serializer
+            // still checks that it is compatible with the record's own schema (latest.compatibility.strict).
+            cfg.put("use.latest.version", true);
+        }
         return cfg;
     }
 }

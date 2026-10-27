@@ -25,17 +25,38 @@ Because of this, consumers must be upgraded before producers start writing the n
 
 Never skip step 4. A producer that writes the new field before consumers can read it breaks them under `BACKWARD`.
 
+## Why an added required field breaks BACKWARD
+
+In Avro terms a BACKWARD check makes the **new** schema the reader and the **previous** one the writer. A reader field that the writer never wrote needs a default, otherwise the reader has no value to fill in. So adding a field without a default is the canonical BACKWARD break, and it is what `schemas/test-fixtures/AccountEvent.incompatible.avsc` does (v2 plus a required `region` string with no default).
+
+"Removing a required field without a default" is the same rule seen from the other side: it breaks old readers of new data (FORWARD direction), because the old reader still expects the field. In Avro, removing a field is itself BACKWARD compatible: the new reader just skips the data. Do not rely on it, since old consumers still running during a rollout would fail.
+
 ## Test compatibility
 
-Use the registry's compatibility endpoint against the latest version of a subject. Locally:
+Three layers, from fastest to most realistic:
+
+1. **Unit test, no registry** (Avro `SchemaCompatibility`): v2 reads v1 data, v1 reads v2 data (the extra `industry` field is ignored), and the fixture is reported incompatible.
+   ```bash
+   mvn -B verify -pl common -am
+   # or only this test: mvn -B test -pl common -Dtest=SchemaEvolutionTest
+   ```
+2. **Registry test** (Testcontainers: Kafka + Schema Registry): sets BACKWARD, registers v1, accepts v2, answers `is_compatible: false` for the fixture and rejects its registration with HTTP 409. Needs Docker.
+   ```bash
+   mvn -B verify -Pit -pl integration-tests -am -Dit.test=SchemaRegistryCompatibilityIT      -Dtest=none -Dsurefire.failIfNoSpecifiedTests=false -Djacoco.skip=true
+   ```
+   CI runs this as the `schema-compat` job.
+3. **Script against a running registry**: checks the latest `.avsc` in `schemas/account` and `schemas/order` against the latest registered version of the subject. Exit code is non-zero if any schema is incompatible. Subjects not registered yet (404) are skipped with a message.
+   ```bash
+   SCHEMA_REGISTRY_URL=http://localhost:8081 scripts/check-schema-compat.sh
+   ```
+
+Manual check of a candidate schema (the script does the escaping for you; this is the raw call):
 
 ```bash
-curl -s -X POST -H "Content-Type: application/vnd.schemaregistry.v1+json" \
-  --data @payload.json \
-  http://localhost:8081/compatibility/subjects/integration.account.v1-value/versions/latest
+curl -s -X POST -H "Content-Type: application/vnd.schemaregistry.v1+json"   --data @payload.json   http://localhost:8081/compatibility/subjects/integration.account.v1-value/versions/latest
 ```
 
-`payload.json` contains the candidate schema as an escaped string: `{"schema": "<schema JSON as a string>"}`. A response of `{"is_compatible": true}` means the change passes. `TODO (M3)`: add this check to CI.
+`payload.json` contains the candidate schema as an escaped string: `{"schema": "<schema JSON as a string>"}`. A response of `{"is_compatible": true}` means the change passes.
 
 On AWS, Glue Schema Registry has its own compatibility check (console or API). `TODO (M4)`: document the exact command after the registry is provisioned.
 

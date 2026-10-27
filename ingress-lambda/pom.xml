@@ -15,6 +15,17 @@
     <dependency>
       <groupId>io.github.i1ich.mskei</groupId>
       <artifactId>common</artifactId>
+      <!-- Ingress publishes raw JSON; keep Avro/Schema Registry out of the Lambda jar (smaller cold start). -->
+      <exclusions>
+        <exclusion>
+          <groupId>org.apache.avro</groupId>
+          <artifactId>avro</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>io.confluent</groupId>
+          <artifactId>kafka-avro-serializer</artifactId>
+        </exclusion>
+      </exclusions>
     </dependency>
     <dependency>
       <groupId>org.apache.kafka</groupId>

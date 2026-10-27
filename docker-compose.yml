@@ -1,4 +1,4 @@
-# Local runtime for msk-event-integration (M1). Pinned images:
+# Local runtime for msk-event-integration (M1 + M2). Pinned images:
 #   confluentinc/cp-kafka:7.9.0
 #   confluentinc/cp-schema-registry:7.9.0
 #   confluentinc/cp-kafka-connect:7.9.0 (+ debezium-connector-postgresql 2.5.4, see infra/connect/Dockerfile)
@@ -169,3 +169,42 @@ services:
       KAFKA_SECURITY: plaintext
       INGRESS_HMAC_SECRET: ${INGRESS_HMAC_SECRET:-}
       INGRESS_API_KEY: ${INGRESS_API_KEY:-}
+
+  # ---- M2: processing and delivery ----
+  stream-processor:
+    build:
+      context: .
+      dockerfile: stream-processor/Dockerfile
+    image: msk-ei/stream-processor:local
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+      schema-registry:
+        condition: service_healthy
+    restart: unless-stopped
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      KAFKA_SECURITY: plaintext
+      SCHEMA_REGISTRY_URL: http://schema-registry:8081
+
+  delivery-service:
+    build:
+      context: .
+      dockerfile: delivery-service/Dockerfile
+    image: msk-ei/delivery-service:local
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+      schema-registry:
+        condition: service_healthy
+      wiremock:
+        condition: service_started
+    restart: unless-stopped
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      KAFKA_SECURITY: plaintext
+      SCHEMA_REGISTRY_URL: http://schema-registry:8081
+      DOWNSTREAM_URL: http://wiremock:8080/downstream
+      # Short delays so the local demo finishes quickly; topic names keep their production meaning (1m / 10m).
+      RETRY_DELAY_1M: PT5S
+      RETRY_DELAY_10M: PT15S

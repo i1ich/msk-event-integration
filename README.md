@@ -35,8 +35,8 @@ flowchart LR
 
 | Milestone | Scope | Status |
 |---|---|---|
-| M1 | Local platform: ingress to `sf.change-events.raw`; CDC to `erp.public.orders`; Avro schemas registered | Done (pending review) |
-| M2 | Processing (Kafka Streams topologies A and B) and error handling (DLQ, retry topics, delivery service) | Planned |
+| M1 | Local platform: ingress to `sf.change-events.raw`; CDC to `erp.public.orders`; Avro schemas registered | Done |
+| M2 | Processing (Kafka Streams topologies A and B) and error handling (DLQ, retry topics, delivery service, replay-cli) | Done (pending review) |
 | M3 | Tests and CI: Testcontainers, JaCoCo >= 80%, cfn-lint, schema compatibility check | Planned |
 | M4 | AWS deploy and teardown (MSK, Glue Schema Registry, ECS Fargate, RDS), cost recorded | Planned |
 | M5 | Documentation and knowledge transfer | Planned |
@@ -45,7 +45,17 @@ flowchart LR
 
 Prerequisites: Docker with Compose, Java 21, Maven 3.9+, bash.
 
-M1 runs end to end locally (verified on Docker Desktop for Windows with Git Bash).
+M1 and M2 run end to end locally (verified on Docker Desktop for Windows with Git Bash).
+
+The demo posts the samples in `samples/` and changes rows in Postgres. It then shows, in order:
+
+1. Raw events and CDC events.
+2. Canonical `integration.account.v1` / `integration.order.v1`.
+3. The DLQ with error headers: an unmapped `Opportunity` event and a downstream `400`.
+4. What the WireMock downstream received: the flaky account gets `503` first and `200` after `integration.retry.1m`.
+5. A `replay-cli --dry-run`.
+
+Locally the retry delays are 5 s / 15 s instead of 1 min / 10 min (see `docker-compose.yml`), so the demo takes about a minute.
 
 ```bash
 bash scripts/up.sh      # or: make up      - start the local stack
@@ -78,6 +88,7 @@ Local endpoints: Kafka `localhost:9092`, Schema Registry `8081`, Kafka Connect `
 | Confluent serdes (`kafka-avro-serializer` family) | 7.9.0 |
 | aws-msk-iam-auth | 2.2.0 |
 | Jackson | 2.18.2 |
+| picocli (replay-cli) | 4.7.6 |
 | JUnit 5 | 5.11.4 |
 | Testcontainers | 1.20.4 |
 | Confluent Kafka (cp-kafka, KRaft) | 7.9.0 |

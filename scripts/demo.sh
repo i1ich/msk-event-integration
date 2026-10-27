@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# M1 demo: post sample events to ingress, change a Postgres row (CDC), show Kafka topics and subjects.
+# Demo (M1 + M2): post sample events, change Postgres rows (CDC), then show raw, canonical and DLQ topics,
+# what the downstream received, and a replay dry run.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -39,26 +40,73 @@ ID=$("${PSQL[@]}" -c "SELECT max(id) FROM orders WHERE account_id='0010000000000
 echo "  order id=$ID inserted, updated, deleted"
 sleep 5
 
-echo
-echo "=== 3. Messages of sf.change-events.raw (headers, key, value) ==="
-docker compose exec -T kafka kafka-console-consumer --bootstrap-server kafka:29092 \
-  --topic sf.change-events.raw --from-beginning --max-messages "$N" --timeout-ms 10000 \
-  --property print.key=true --property print.headers=true 2>/dev/null || true
+# Plain-text consumer (raw JSON and DLQ). Prints headers, key and value.
+show_text() {
+  docker compose exec -T kafka kafka-console-consumer --bootstrap-server kafka:29092 \
+    --topic "$1" --from-beginning --max-messages "$N" --timeout-ms 10000 \
+    --property print.key=true --property print.headers=true 2>/dev/null || true
+}
+
+# Avro consumer: show_avro <topic> [avro|string] (key format). Canonical topics have plain String keys,
+# Debezium keys are Avro. The Confluent tools log at INFO to stdout, so log4j is pointed at a WARN-only stderr config.
+# MSYS_NO_PATHCONV stops Git Bash on Windows from rewriting /tmp/... in the script into a Windows path.
+show_avro() {
+  MSYS_NO_PATHCONV=1 docker compose exec -T schema-registry sh -c '
+    printf "log4j.rootLogger=WARN, err\nlog4j.appender.err=org.apache.log4j.ConsoleAppender\nlog4j.appender.err.Target=System.err\nlog4j.appender.err.layout=org.apache.log4j.PatternLayout\n" > /tmp/quiet-log4j.properties
+    SCHEMA_REGISTRY_LOG4J_OPTS=-Dlog4j.configuration=file:/tmp/quiet-log4j.properties \
+    kafka-avro-console-consumer --bootstrap-server kafka:29092 \
+      --topic "$1" --from-beginning --max-messages "$2" --timeout-ms 10000 \
+      --property schema.registry.url=http://localhost:8081 --property print.key=true $3
+  ' sh "$1" "$N" "$( [ "${2:-avro}" = string ] && echo --key-deserializer=org.apache.kafka.common.serialization.StringDeserializer )" 2>/dev/null || true
+}
 
 echo
-echo "=== 4. Messages of erp.public.orders (Avro) ==="
-# The Confluent tools log at INFO to stdout; point log4j at a WARN-only stderr config to keep the output readable.
-# MSYS_NO_PATHCONV: stop Git Bash on Windows from rewriting /tmp/... inside the script into a Windows path.
-MSYS_NO_PATHCONV=1 docker compose exec -T schema-registry sh -c '
-  printf "log4j.rootLogger=WARN, err
-log4j.appender.err=org.apache.log4j.ConsoleAppender
-log4j.appender.err.Target=System.err
-log4j.appender.err.layout=org.apache.log4j.PatternLayout
-" > /tmp/quiet-log4j.properties
-  SCHEMA_REGISTRY_LOG4J_OPTS=-Dlog4j.configuration=file:/tmp/quiet-log4j.properties   kafka-avro-console-consumer --bootstrap-server kafka:29092     --topic erp.public.orders --from-beginning --max-messages "$1" --timeout-ms 10000     --property schema.registry.url=http://localhost:8081 --property print.key=true
-' sh "$N" 2>/dev/null || true
+echo "=== 3. Raw events: sf.change-events.raw (headers, key, value) ==="
+show_text sf.change-events.raw
 
 echo
-echo "=== 5. Schema Registry subjects ==="
+echo "=== 4. CDC events: erp.public.orders (Debezium envelope, Avro) ==="
+show_avro erp.public.orders
+
+WAIT="${DEMO_RETRY_WAIT_SECONDS:-25}"
+echo
+echo "=== 5. Waiting ${WAIT}s for stream processing and delivery retries (local retry delays: 5s / 15s) ==="
+sleep "$WAIT"
+
+echo
+echo "=== 6. Canonical accounts: integration.account.v1 (Avro) ==="
+show_avro integration.account.v1 string
+
+echo
+echo "=== 7. Canonical orders: integration.order.v1 (Avro) ==="
+show_avro integration.order.v1 string
+
+echo
+echo "=== 8. Dead letters: integration.dlq (error headers, original bytes) ==="
+show_text integration.dlq
+
+echo
+echo "=== 9. What the downstream received (WireMock journal: status, path, Idempotency-Key) ==="
+# The journal is pretty-printed JSON, newest first. Each entry has the request ("absoluteUrl" appears only there),
+# its Idempotency-Key header, then the response "status" (the first status after it). awk keeps this
+# dependency-free (no jq/python); the matched stub mapping also has "url"/"status", which is why absoluteUrl is used.
+curl -sS "${WIREMOCK_URL:-http://localhost:8089}/__admin/requests" | tr -d '\r' | awk '
+  /"absoluteUrl" *:/     { gsub(/[",]/, "", $3); url = $3; sub(/^https?:\/\/[^\/]+/, "", url); key = "-"; status = "" }
+  /"Idempotency-Key" *:/ { gsub(/[",]/, "", $3); key = $3 }
+  /"status" *: *[0-9]+/  { if (url != "" && status == "") { gsub(/,/, "", $3); status = $3;
+                           lines[n++] = sprintf("  HTTP %s  %-22s Idempotency-Key=%s", status, url, key); url = "" } }
+  END { for (i = n - 1; i >= 0; i--) print lines[i] }' || echo "  (could not read the WireMock journal)"
+
+echo
+echo "=== 10. Replay dry run (nothing is republished) ==="
+JAR="$ROOT/replay-cli/target/replay-cli.jar"
+if [ -f "$JAR" ]; then
+  KAFKA_BOOTSTRAP_SERVERS=localhost:9092 java -jar "$JAR" --dry-run || true
+else
+  echo "  $JAR not found; build it with: mvn -B -pl replay-cli -am package -DskipTests"
+fi
+
+echo
+echo "=== 11. Schema Registry subjects ==="
 curl -sS "$SR/subjects"
 echo

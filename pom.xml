@@ -17,6 +17,7 @@
     <module>stream-processor</module>
     <module>delivery-service</module>
     <module>replay-cli</module>
+    <module>infra-bootstrap</module>
   </modules>
 
   <properties>
@@ -40,6 +41,10 @@
     <testcontainers.version>1.20.4</testcontainers.version>
     <wiremock.version>3.10.0</wiremock.version>
     <picocli.version>4.7.6</picocli.version>
+    <!-- M4 (AWS) -->
+    <glue-schema-registry.version>1.1.27</glue-schema-registry.version>
+    <aws-sdk.version>2.55.16</aws-sdk.version>
+    <postgresql.version>42.7.14</postgresql.version>
     <awaitility.version>4.2.2</awaitility.version>
     <!-- Transitive deps pinned to patched versions (Trivy HIGH findings). org.lz4:lz4-java 1.8.1 is a relocation
          to at.yawk.lz4:lz4-java, so both coordinates are managed. -->
@@ -64,6 +69,14 @@
 
   <dependencyManagement>
     <dependencies>
+      <dependency>
+        <!-- One AWS SDK v2 version for msk-iam-auth, Glue serde and Secrets Manager -->
+        <groupId>software.amazon.awssdk</groupId>
+        <artifactId>bom</artifactId>
+        <version>${aws-sdk.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
       <dependency>
         <groupId>com.fasterxml.jackson</groupId>
         <artifactId>jackson-bom</artifactId>
@@ -180,6 +193,21 @@
         <groupId>org.xerial.snappy</groupId>
         <artifactId>snappy-java</artifactId>
         <version>${snappy.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>software.amazon.glue</groupId>
+        <artifactId>schema-registry-serde</artifactId>
+        <version>${glue-schema-registry.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>software.amazon.glue</groupId>
+        <artifactId>schema-registry-kafkastreams-serde</artifactId>
+        <version>${glue-schema-registry.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.postgresql</groupId>
+        <artifactId>postgresql</artifactId>
+        <version>${postgresql.version}</version>
       </dependency>
       <dependency>
         <groupId>org.awaitility</groupId>

@@ -1,0 +1,13 @@
+<configuration>
+  <appender name="STDERR" class="ch.qos.logback.core.ConsoleAppender">
+    <target>System.err</target>
+    <encoder>
+      <pattern>%d{HH:mm:ss.SSS} %-5level %logger{20} - %msg%n</pattern>
+    </encoder>
+  </appender>
+  <!-- Kafka client logs a lot at INFO; the operator only needs warnings -->
+  <logger name="org.apache.kafka" level="WARN"/>
+  <root level="INFO">
+    <appender-ref ref="STDERR"/>
+  </root>
+</configuration>

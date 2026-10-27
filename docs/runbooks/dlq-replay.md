@@ -1,44 +1,86 @@
 # Runbook: DLQ replay
 
-Status: outline. `TODO (M2)`: finalize once replay-cli is implemented.
+Tool: [replay-cli](../../replay-cli/README.md). Build once: `mvn -q -B -pl replay-cli -am package`.
 
 ## When to use
 
 - `integration.dlq` has records that failed for a reason that is now fixed (downstream outage over, bad config corrected, consumer bug patched).
 - Do not replay records whose cause is still present. They will return to the DLQ.
 
-## Before replaying
+## 1. Inspect the DLQ
 
-1. Group DLQ records by `error-class` and `error-message`. Confirm one root cause.
-2. Check `failed-at` and `source-topic` to find the time window and the topic.
-3. Confirm the fix is deployed.
-4. Run with `--dry-run` and check the count and sample.
-
-## Steps
-
-`TODO (M2)`: confirm flag names and defaults. Planned interface:
+Local stack (headers show why and where each record failed):
 
 ```bash
-replay-cli --dry-run --source-topic <dlq-filter> --rate <msgs-per-sec> [filters]
-replay-cli --source-topic <dlq-filter> --rate <msgs-per-sec> [filters]
+docker compose exec -T kafka kafka-console-consumer --bootstrap-server kafka:29092 \
+  --topic integration.dlq --from-beginning --property print.headers=true --timeout-ms 10000
 ```
 
-- Filters: `error-class`, `failed-at` range, `source-topic`. `TODO (M2)`: list all supported filters.
-- Rate limit: keep replay well below downstream capacity.
-- Each republished record gets a `replayed-at` header.
+Look at the headers: `error-class`, `error-message`, `source-topic`, `source-partition`, `source-offset`, `failed-at`, `attempts`, plus the original `event-id`.
 
-## Verify
+## 2. Find the root cause
+
+1. Group the records by `error-class` and `error-message`. Confirm there is one root cause for what you want to replay.
+2. Note the time window (`failed-at`) and the `source-topic`.
+3. Look at the logs of the service that wrote them (`stream-processor` or `delivery-service`) around `failed-at`.
+
+## 3. Fix
+
+Deploy the fix (or wait until the downstream is healthy again). Confirm it works with a fresh event before touching the DLQ.
+
+## 4. Dry run (always)
+
+Nothing is published; it prints partition, offset, source-topic, error-class, event-id and key of each match.
+
+```bash
+export KAFKA_BOOTSTRAP_SERVERS=localhost:9092
+java -jar replay-cli/target/replay-cli.jar --dry-run \
+  --source-topic integration.account.v1 --error-class UnmappedEntityException \
+  --from 2026-01-31T10:00:00Z --to 2026-01-31T12:00:00Z
+```
+
+Check the `matched` count and a few samples. Prefer narrow filters (topic + error class + time window).
+Records without a `source-topic` header are skipped and counted; handle them by hand.
+
+## 5. Replay with a rate limit
+
+Start small, then the rest:
+
+```bash
+# first batch
+java -jar replay-cli/target/replay-cli.jar --source-topic integration.account.v1 \
+  --error-class UnmappedEntityException --from 2026-01-31T10:00:00Z --to 2026-01-31T12:00:00Z \
+  --rate 5 --max 20
+
+# if it looks good: the whole window (the first 20 will be sent a second time, see Notes; narrow --from instead)
+java -jar replay-cli/target/replay-cli.jar --source-topic integration.account.v1 \
+  --error-class UnmappedEntityException --from 2026-01-31T10:00:00Z --to 2026-01-31T12:00:00Z \
+  --rate 10
+```
+
+Keep `--rate` well below downstream capacity. For MSK use `KAFKA_SECURITY=iam` and the MSK bootstrap string.
+Exit code 0 and `failed=0` in the summary mean every record was acknowledged by the broker.
+
+## 6. Verify
 
 - Watch consumer lag on the canonical topics and the delivery-service logs.
 - Confirm the downstream service received the events (WireMock locally).
-- Check that records did not return to `integration.dlq`. If they did, stop and investigate.
+- Check that records did not return to `integration.dlq` (re-run the console consumer from step 1 and compare). If they did, stop and investigate.
+
+## 7. Record what you replayed
+
+The DLQ itself is not modified (retention 14 days), so nothing marks a record as replayed. Write down in the incident ticket:
+the exact command, time, the summary line, and the `--from`/`--to` window. Replayed records carry a `replayed-at` header on the target topic.
 
 ## Stop conditions
 
-- Downstream returns sustained `5xx` or `429`: stop, let the retry path handle it, and resume later.
+- Downstream returns sustained `5xx` or `429`: stop (Ctrl+C), let the retry path handle it, and resume later with `--from` set after the last replayed `failed-at`.
 - Replayed records fail with a new error class: stop and treat as a new incident.
 
 ## Notes
 
-- Replay can duplicate side effects if the downstream does not honor `Idempotency-Key`. Use the event id from the original record.
+- Replays can create duplicates. Consumers are idempotent by `event-id` / `Idempotency-Key`, so duplicates are harmless as long as the downstream honors the key.
+- Replaying twice with the same filters sends the records twice, because the DLQ is not changed.
+- Replay only after the root cause is fixed; always `--dry-run` first; prefer narrow filters.
 - Replay does not restore original ordering. See [architecture ordering](../architecture.md#ordering-per-key-and-partitions).
+- The tool never commits offsets and uses no consumer group, so it does not affect any running consumer.

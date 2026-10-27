@@ -1,4 +1,68 @@
 {
-  "request": { "method": "POST", "url": "/downstream" },
-  "response": { "status": 200, "headers": { "Content-Type": "application/json" }, "jsonBody": { "status": "ok" } }
+  "mappings": [
+    {
+      "name": "accounts: FAIL1 account fails once with 503, then recovers",
+      "priority": 1,
+      "scenarioName": "fail-once-accounts",
+      "requiredScenarioState": "Started",
+      "newScenarioState": "recovered",
+      "request": {
+        "method": "POST",
+        "url": "/downstream/accounts",
+        "bodyPatterns": [ { "matchesJsonPath": "$[?(@.accountId == '001xx000000FAIL1AAA')]" } ]
+      },
+      "response": { "status": 503, "headers": { "Content-Type": "application/json" }, "jsonBody": { "error": "temporarily unavailable" } }
+    },
+    {
+      "name": "orders: FAIL1 account fails once with 503, then recovers",
+      "priority": 1,
+      "scenarioName": "fail-once-orders",
+      "requiredScenarioState": "Started",
+      "newScenarioState": "recovered",
+      "request": {
+        "method": "POST",
+        "url": "/downstream/orders",
+        "bodyPatterns": [ { "matchesJsonPath": "$[?(@.accountId == '001xx000000FAIL1AAA')]" } ]
+      },
+      "response": { "status": 503, "headers": { "Content-Type": "application/json" }, "jsonBody": { "error": "temporarily unavailable" } }
+    },
+    {
+      "name": "accounts: REJECT account is always refused with 400",
+      "priority": 1,
+      "request": {
+        "method": "POST",
+        "url": "/downstream/accounts",
+        "bodyPatterns": [ { "matchesJsonPath": "$[?(@.accountId == '001xx000000REJECTAAA')]" } ]
+      },
+      "response": { "status": 400, "headers": { "Content-Type": "application/json" }, "jsonBody": { "error": "rejected" } }
+    },
+    {
+      "name": "orders: REJECT account is always refused with 400",
+      "priority": 1,
+      "request": {
+        "method": "POST",
+        "url": "/downstream/orders",
+        "bodyPatterns": [ { "matchesJsonPath": "$[?(@.accountId == '001xx000000REJECTAAA')]" } ]
+      },
+      "response": { "status": 400, "headers": { "Content-Type": "application/json" }, "jsonBody": { "error": "rejected" } }
+    },
+    {
+      "name": "accounts: default 200",
+      "priority": 5,
+      "request": { "method": "POST", "url": "/downstream/accounts" },
+      "response": { "status": 200, "headers": { "Content-Type": "application/json" }, "jsonBody": { "status": "ok" } }
+    },
+    {
+      "name": "orders: default 200",
+      "priority": 5,
+      "request": { "method": "POST", "url": "/downstream/orders" },
+      "response": { "status": 200, "headers": { "Content-Type": "application/json" }, "jsonBody": { "status": "ok" } }
+    },
+    {
+      "name": "legacy: POST /downstream (kept for the ingress demo)",
+      "priority": 10,
+      "request": { "method": "POST", "url": "/downstream" },
+      "response": { "status": 200, "headers": { "Content-Type": "application/json" }, "jsonBody": { "status": "ok" } }
+    }
+  ]
 }

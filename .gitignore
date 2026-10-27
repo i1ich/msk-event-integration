@@ -1,0 +1,11 @@
+target/
+*.class
+*.log
+.idea/
+*.iml
+.vscode/
+.env
+*.zip
+!infra/**/*.zip.md
+.aws-sam/
+packaged*.yaml

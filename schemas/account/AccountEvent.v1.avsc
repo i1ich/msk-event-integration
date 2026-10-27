@@ -1,0 +1,17 @@
+{
+  "type": "record",
+  "name": "AccountEvent",
+  "namespace": "io.github.i1ich.mskei.schema",
+  "doc": "Canonical account event (v1), produced to integration.account.v1.",
+  "fields": [
+    {"name": "eventId", "type": "string"},
+    {"name": "accountId", "type": "string"},
+    {"name": "changeType", "type": {"type": "enum", "name": "ChangeType", "symbols": ["CREATE", "UPDATE", "DELETE", "UNDELETE"]}},
+    {"name": "name", "type": ["null", "string"], "default": null},
+    {"name": "phone", "type": ["null", "string"], "default": null},
+    {"name": "billingCity", "type": ["null", "string"], "default": null},
+    {"name": "transactionKey", "type": ["null", "string"], "default": null},
+    {"name": "commitTimestamp", "type": {"type": "long", "logicalType": "timestamp-millis"}},
+    {"name": "sourceSystem", "type": "string", "default": "salesforce"}
+  ]
+}

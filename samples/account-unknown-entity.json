@@ -1,0 +1,1 @@
+{"ChangeEventHeader":{"entityName":"Opportunity","changeType":"CREATE","recordIds":["006xx000001TUvWAAW"],"commitTimestamp":1761556980000,"transactionKey":"0001a2b3-0000-4c5d-8e9f-000000000004","changeOrigin":"com/salesforce/api/rest/61.0","commitUser":"005xx000001Sv6AAAS"},"Name":"Big Deal","Amount":50000}

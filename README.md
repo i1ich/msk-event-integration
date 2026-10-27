@@ -1,5 +1,7 @@
 # msk-event-integration
 
+[![CI](https://github.com/i1ich/msk-event-integration/actions/workflows/ci.yml/badge.svg)](https://github.com/i1ich/msk-event-integration/actions/workflows/ci.yml) ![Coverage](.github/badges/jacoco.svg)
+
 A public reference event-driven integration platform on AWS. Change events from a Salesforce-style source and row-level changes from a PostgreSQL `orders` table are ingested, normalized into canonical Avro topics with Kafka Streams, and delivered to a downstream HTTP service with retries and a dead-letter queue. A replay CLI re-drives failed messages. Built as an honest portfolio project: local-first, with the AWS deployment added in a later milestone.
 
 ## Architecture
@@ -36,8 +38,8 @@ flowchart LR
 | Milestone | Scope | Status |
 |---|---|---|
 | M1 | Local platform: ingress to `sf.change-events.raw`; CDC to `erp.public.orders`; Avro schemas registered | Done |
-| M2 | Processing (Kafka Streams topologies A and B) and error handling (DLQ, retry topics, delivery service, replay-cli) | Done (pending review) |
-| M3 | Tests and CI: Testcontainers, JaCoCo >= 80%, cfn-lint, schema compatibility check | Planned |
+| M2 | Processing (Kafka Streams topologies A and B) and error handling (DLQ, retry topics, delivery service, replay-cli) | Done |
+| M3 | Tests and CI: Testcontainers, JaCoCo >= 80%, cfn-lint, schema compatibility check | Done locally (pending review; CI not run until the first push) |
 | M4 | AWS deploy and teardown (MSK, Glue Schema Registry, ECS Fargate, RDS), cost recorded | Planned |
 | M5 | Documentation and knowledge transfer | Planned |
 
@@ -61,10 +63,32 @@ Locally the retry delays are 5 s / 15 s instead of 1 min / 10 min (see `docker-c
 bash scripts/up.sh      # or: make up      - start the local stack
 bash scripts/demo.sh    # or: make demo    - send sample events and show results
 bash scripts/down.sh    # stop the stack and remove volumes
-mvn -B verify           # build and run tests
+mvn -B verify           # build, unit tests, JaCoCo 80% line-coverage gate
+mvn -B verify -Pit      # plus end-to-end tests with Testcontainers (needs Docker, ~4 min)
 ```
 
 Local endpoints: Kafka `localhost:9092`, Schema Registry `8081`, Kafka Connect `8083`, PostgreSQL `5433` (host; `POSTGRES_HOST_PORT`), ingress `8088` (host; `INGRESS_HOST_PORT`), WireMock `8089`, Kafka UI `8090`.
+
+## Tests and CI
+
+| Level | What | Where |
+|---|---|---|
+| Unit | Mappers, validation, HMAC, error classification, retry routing, replay filters and rate limiter, schema evolution (Avro rules) | `*/src/test`, `mvn -B verify` |
+| Topology | Both Kafka Streams topologies with `TopologyTestDriver` and a mock Schema Registry | `stream-processor/src/test` |
+| End-to-end | Real Kafka, Schema Registry, PostgreSQL + Debezium Connect (Testcontainers), services in-process, WireMock downstream: ingress → downstream, CDC insert/update/delete, poison messages → DLQ, 503 → retry → success, 400 → DLQ, replay | `integration-tests`, `mvn -B verify -Pit` |
+| Schema compatibility | The registry accepts AccountEvent v2 and rejects an incompatible change (HTTP 409) | `SchemaRegistryCompatibilityIT`, `scripts/check-schema-compat.sh` |
+
+Coverage gate: JaCoCo fails the build below 80% line coverage per module. Avro-generated classes and the `*App` wiring classes are excluded; the end-to-end tests cover the wiring.
+
+The services run with `SCHEMA_AUTO_REGISTER=false` in the end-to-end tests, as in production. They write with the latest registered schema version and never register schemas themselves.
+
+`.github/workflows/ci.yml` runs on every push and pull request. Jobs:
+
+- unit tests with the coverage gate (report as artifact and summary, badge committed on `main`);
+- end-to-end tests;
+- `cfn-lint` (skips with a notice until the CloudFormation templates arrive in M4);
+- the schema compatibility test;
+- a Trivy dependency scan (HIGH/CRITICAL with a fix available fail the build).
 
 ## Topics
 
@@ -83,11 +107,12 @@ Local endpoints: Kafka `localhost:9092`, Schema Registry `8081`, Kafka Connect `
 | Component | Version |
 |---|---|
 | Java | 21 |
-| kafka-clients / kafka-streams | 3.9.1 |
+| kafka-clients / kafka-streams | 3.9.2 |
 | Apache Avro | 1.12.0 |
 | Confluent serdes (`kafka-avro-serializer` family) | 7.9.0 |
 | aws-msk-iam-auth | 2.2.0 |
-| Jackson | 2.18.2 |
+| Jackson | 2.18.12 |
+| lz4-java / snappy-java (pinned transitive) | 1.8.1 / 1.1.10.12 |
 | picocli (replay-cli) | 4.7.6 |
 | JUnit 5 | 5.11.4 |
 | Testcontainers | 1.20.4 |
@@ -123,9 +148,10 @@ msk-event-integration/
 ├── schemas/                 # Avro schemas (account/, order/)
 ├── samples/                 # sample events and payloads for demo
 ├── infra/                   # CloudFormation stacks (network, msk, topics, schema-registry, msk-connect, ingress, processing, observability)
+├── integration-tests/       # Testcontainers end-to-end tests (-Pit)
 ├── scripts/                 # up.sh, demo.sh, down.sh (local docker compose)
 ├── docs/                    # architecture, ADRs, runbooks, cost, knowledge transfer
-└── .github/                 # CI workflows (M3)
+└── .github/                 # CI workflow (ci.yml) and coverage badge
 ```
 
 ## License

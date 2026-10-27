@@ -1,0 +1,181 @@
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build and unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # Needs write access only to push the coverage badge on main (step below).
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: Maven verify (unit tests + JaCoCo 80% gate)
+        run: mvn -B verify
+
+      - name: Upload JaCoCo report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jacoco-report
+          path: '**/target/site/jacoco/'
+          if-no-files-found: warn
+
+      - name: Coverage summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "### Line coverage (unit tests)"
+            echo
+            echo "| Module | Line coverage |"
+            echo "|---|---|"
+            for csv in */target/site/jacoco/jacoco.csv; do
+              [ -e "$csv" ] || continue
+              module="${csv%%/*}"
+              awk -F, -v m="$module" 'NR>1 { missed+=$8; covered+=$9 }
+                END { t=missed+covered; printf "| %s | %.1f%% (%d/%d lines) |\n", m, (t? 100*covered/t : 0), covered, t }' "$csv"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Generate coverage badge
+        id: jacoco
+        uses: cicirello/jacoco-badge-generator@v2
+        with:
+          jacoco-csv-file: >-
+            common/target/site/jacoco/jacoco.csv
+            ingress-lambda/target/site/jacoco/jacoco.csv
+            stream-processor/target/site/jacoco/jacoco.csv
+            delivery-service/target/site/jacoco/jacoco.csv
+            replay-cli/target/site/jacoco/jacoco.csv
+          badges-directory: .github/badges
+          generate-branches-badge: false
+          generate-summary: false
+
+      - name: Commit coverage badge (main only)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        shell: bash
+        run: |
+          if [ -n "$(git status --porcelain .github/badges)" ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add .github/badges
+            git commit -m "docs: update coverage badge [skip ci]"
+            git push
+          else
+            echo "Badge unchanged."
+          fi
+
+  integration-tests:
+    name: Integration tests (Testcontainers)
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: Maven verify with the it profile (Docker is available on ubuntu-latest)
+        run: mvn -B verify -Pit
+
+      - name: Upload failsafe reports
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: failsafe-reports
+          path: '**/target/failsafe-reports/'
+          if-no-files-found: ignore
+
+  cfn-lint:
+    name: CloudFormation lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install cfn-lint
+        run: pip install cfn-lint==1.20.2
+
+      - name: Lint templates, or skip with a notice while there are none (templates are added in M4)
+        shell: bash
+        run: |
+          mapfile -t templates < <(find infra/cloudformation -type f \( -name '*.yaml' -o -name '*.yml' \) 2>/dev/null | sort)
+          if [ "${#templates[@]}" -eq 0 ]; then
+            echo "::notice::cfn-lint skipped: no templates yet (added in M4)"
+            exit 0
+          fi
+          cfn-lint "${templates[@]}"
+
+  schema-compat:
+    name: Schema Registry compatibility
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      # Proves that a BACKWARD-compatible change is accepted and an incompatible one is rejected (HTTP 409).
+      # -DskipTests would also skip failsafe, so unit tests are filtered out instead; JaCoCo is skipped so
+      # the coverage gate does not run on a partial test set.
+      - name: Run only SchemaRegistryCompatibilityIT
+        run: >-
+          mvn -B verify -Pit -pl integration-tests -am
+          -Dit.test=SchemaRegistryCompatibilityIT
+          -Dtest=none -Dsurefire.failIfNoSpecifiedTests=false
+          -Djacoco.skip=true
+
+  dependency-scan:
+    name: Dependency vulnerability scan (Trivy)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      # Triage: upgrade the dependency if a fixed version exists (versions are pinned in the root pom.xml
+      # and README). If a finding is a false positive or not reachable, add its ID to .trivyignore in the
+      # repo root with a comment explaining why and an expiry date, e.g.
+      #   # CVE-2024-12345 not reachable: only used in tests. Review by 2026-12-31.
+      #   CVE-2024-12345
+      - name: Trivy filesystem scan
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: '1'
+          format: table

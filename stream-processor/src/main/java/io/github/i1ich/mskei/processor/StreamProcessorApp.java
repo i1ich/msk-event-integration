@@ -41,7 +41,16 @@ public final class StreamProcessorApp {
     }
 
     public static void main(String[] args) {
-        Map<String, String> env = System.getenv();
+        KafkaStreams streams = start(System.getenv());
+        // close() lets Streams finish the current transaction and leave the consumer group cleanly.
+        Runtime.getRuntime().addShutdownHook(new Thread(streams::close, "streams-shutdown"));
+    }
+
+    /**
+     * Builds and starts the app without blocking and without a shutdown hook (the caller owns the lifecycle:
+     * {@code main} adds a hook, integration tests call {@code close()}).
+     */
+    public static KafkaStreams start(Map<String, String> env) {
         KafkaStreams streams = new KafkaStreams(
                 ProcessorTopology.build(SchemaRegistryConfig.from(env)), streamsProperties(env));
 
@@ -51,11 +60,10 @@ public final class StreamProcessorApp {
             LOG.error("Stream thread died, replacing it", e);
             return StreamsUncaughtExceptionHandler.StreamThreadExceptionResponse.REPLACE_THREAD;
         });
-        // close() lets Streams finish the current transaction and leave the consumer group cleanly.
-        Runtime.getRuntime().addShutdownHook(new Thread(streams::close, "streams-shutdown"));
 
         streams.start();
         LOG.info("stream-processor started");
+        return streams;
     }
 
     static Properties streamsProperties(Map<String, String> env) {

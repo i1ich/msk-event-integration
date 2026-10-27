@@ -6,6 +6,7 @@ import io.github.i1ich.mskei.common.SchemaRegistryConfig;
 import io.github.i1ich.mskei.common.Topics;
 import java.time.Clock;
 import java.util.List;
+import java.util.Map;
 import java.util.Properties;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.clients.producer.KafkaProducer;
@@ -24,51 +25,82 @@ public final class DeliveryServiceApp {
     private DeliveryServiceApp() {
     }
 
-    public static void main(String[] args) throws InterruptedException {
-        DeliveryConfig config = DeliveryConfig.fromEnv();
-        Clock clock = Clock.systemUTC();
+    /** Handle of a started service. */
+    public static final class Running implements AutoCloseable {
+        private final ConsumerLoop main;
+        private final ConsumerLoop retry;
+        private final Thread mainThread;
+        private final Thread retryThread;
+        private final KafkaProducer<byte[], byte[]> producer;
 
-        // Idempotent producer + acks=all: a retry/DLQ write is never lost or duplicated by producer retries.
-        Properties producerProps = KafkaClientConfig.fromEnv();
-        producerProps.put("enable.idempotence", "true");
-        producerProps.put("acks", "all");
-        KafkaProducer<byte[], byte[]> producer =
-                new KafkaProducer<>(producerProps, new ByteArraySerializer(), new ByteArraySerializer());
+        private Running(ConsumerLoop main, ConsumerLoop retry, Thread mainThread, Thread retryThread,
+                KafkaProducer<byte[], byte[]> producer) {
+            this.main = main;
+            this.retry = retry;
+            this.mainThread = mainThread;
+            this.retryThread = retryThread;
+            this.producer = producer;
+        }
 
-        KafkaAvroDeserializer avro = new KafkaAvroDeserializer();
-        avro.configure(SchemaRegistryConfig.fromEnv(), false);
+        /** Blocks until both consumer threads have ended. */
+        public void awaitTermination() throws InterruptedException {
+            mainThread.join();
+            retryThread.join();
+        }
 
-        RetryRouter router = new RetryRouter(clock, config.retryDelay1m(), config.retryDelay10m());
-        RecordHandler handler = new RecordHandler(avro,
-                new HttpDownstreamSender(config.downstreamUrl(), config.connectTimeout(), config.requestTimeout()),
-                producer, router);
-
-        ConsumerLoop main = new ConsumerLoop("main", newConsumer("delivery-service"),
-                List.of(Topics.ACCOUNT_V1, Topics.ORDER_V1), handler, false, clock);
-        ConsumerLoop retry = new ConsumerLoop("retry", newConsumer("delivery-service-retry"),
-                List.of(Topics.RETRY_1M, Topics.RETRY_10M), handler, true, clock);
-
-        Thread mainThread = thread("main-consumer", main);
-        Thread retryThread = thread("retry-consumer", retry);
-
-        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+        /** Stops both loops, waits for them and closes the producer. Safe to call more than once. */
+        @Override
+        public void close() {
             log.info("Shutdown requested");
             main.stop();
             retry.stop();
             join(mainThread);
             join(retryThread);
             producer.close();
-        }));
-
-        mainThread.start();
-        retryThread.start();
-        mainThread.join();
-        retryThread.join();
-        producer.close();
+        }
     }
 
-    private static KafkaConsumer<byte[], byte[]> newConsumer(String groupId) {
-        Properties props = KafkaClientConfig.fromEnv();
+    public static void main(String[] args) throws InterruptedException {
+        Running running = start(System.getenv());
+        Runtime.getRuntime().addShutdownHook(new Thread(running::close));
+        running.awaitTermination();
+        running.producer.close();
+    }
+
+    /** Starts both consumer threads and returns at once: no blocking and no shutdown hook. */
+    public static Running start(Map<String, String> env) {
+        DeliveryConfig config = DeliveryConfig.from(env);
+        Clock clock = Clock.systemUTC();
+
+        // Idempotent producer + acks=all: a retry/DLQ write is never lost or duplicated by producer retries.
+        Properties producerProps = KafkaClientConfig.from(env);
+        producerProps.put("enable.idempotence", "true");
+        producerProps.put("acks", "all");
+        KafkaProducer<byte[], byte[]> producer =
+                new KafkaProducer<>(producerProps, new ByteArraySerializer(), new ByteArraySerializer());
+
+        KafkaAvroDeserializer avro = new KafkaAvroDeserializer();
+        avro.configure(SchemaRegistryConfig.from(env), false);
+
+        RetryRouter router = new RetryRouter(clock, config.retryDelay1m(), config.retryDelay10m());
+        RecordHandler handler = new RecordHandler(avro,
+                new HttpDownstreamSender(config.downstreamUrl(), config.connectTimeout(), config.requestTimeout()),
+                producer, router);
+
+        ConsumerLoop main = new ConsumerLoop("main", newConsumer(env, "delivery-service"),
+                List.of(Topics.ACCOUNT_V1, Topics.ORDER_V1), handler, false, clock);
+        ConsumerLoop retry = new ConsumerLoop("retry", newConsumer(env, "delivery-service-retry"),
+                List.of(Topics.RETRY_1M, Topics.RETRY_10M), handler, true, clock);
+
+        Thread mainThread = thread("main-consumer", main);
+        Thread retryThread = thread("retry-consumer", retry);
+        mainThread.start();
+        retryThread.start();
+        return new Running(main, retry, mainThread, retryThread, producer);
+    }
+
+    private static KafkaConsumer<byte[], byte[]> newConsumer(Map<String, String> env, String groupId) {
+        Properties props = KafkaClientConfig.from(env);
         props.put("group.id", groupId);
         // We commit by hand, after the work is done (see ConsumerLoop).
         props.put("enable.auto.commit", "false");

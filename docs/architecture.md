@@ -102,3 +102,79 @@ Added by replay-cli on republish:
 | `replayed-at` | ISO-8601 UTC timestamp of the replay |
 
 `TODO (M2)`: confirm the value formats and whether `attempts` is carried through the retry topics.
+
+## AWS deployment
+
+Design contract: [infra/cloudformation/CONTRACT.md](../infra/cloudformation/CONTRACT.md). Default region sa-east-1. Cost and teardown rules: [cost.md](cost.md).
+
+### Stacks, in deploy order
+
+0. `budget`: AWS Budget, monthly limit $20 (account-level, deployed first).
+0. `github-oidc`: GitHub OIDC provider and deploy role (optional, once).
+1. `artifacts`: S3 bucket for Lambda jars and the Connect plugin zip.
+2. `network`: VPC 10.40.0.0/16, 2 private subnets, 1 public subnet, one NAT gateway, S3 gateway endpoint, security groups.
+3. `msk`: MSK provisioned (2 × `kafka.t3.small`) or serverless, IAM auth, TLS in transit, custom configuration.
+4. `topics`: topics from `scripts/topics.txt`, created by the infra-bootstrap `TopicsHandler` Lambda.
+5. `schema-registry`: Glue Schema Registry `${EnvName}-msk-ei`, schemas registered by script.
+6. `database`: RDS PostgreSQL 16 `db.t4g.micro`, single-AZ, logical replication on, schema created by `DbInitHandler`.
+7. `ecr`: image repositories for stream-processor, delivery-service, downstream-mock.
+8. `msk-connect`: Debezium PostgreSQL connector on 1 MCU, Glue value converter.
+9. `ingress`: API Gateway `POST /events` (API key, usage plan), ingress Lambda in the private subnets, HMAC secret, alarms.
+10. `processing`: ECS cluster, Fargate services stream-processor and delivery-service (with WireMock sidecar), no public IPs.
+11. `observability`: CloudWatch dashboard, DLQ and consumer-lag alarms, SNS topic with email subscription.
+
+Teardown runs in reverse order, empties the artifacts bucket, and deletes the Glue schemas before their stacks.
+
+### Network
+
+```mermaid
+flowchart TB
+    client([Client]) -->|HTTPS, x-api-key + HMAC| apigw[API Gateway REST<br/>outside VPC]
+    apigw -->|Lambda proxy| ingress
+
+    subgraph VPC["VPC 10.40.0.0/16 (sa-east-1)"]
+        subgraph PRIV["Private subnets (2 AZs)"]
+            ingress[Ingress Lambda]
+            ecs[ECS Fargate<br/>stream-processor<br/>delivery-service + WireMock]
+            connect[MSK Connect<br/>Debezium worker, 1 MCU]
+            msk[(MSK provisioned<br/>2 brokers, IAM)]
+            rds[(RDS PostgreSQL<br/>db.t4g.micro)]
+            cr[Custom-resource Lambdas<br/>topics, DB init]
+        end
+        subgraph PUB["Public subnet"]
+            nat[NAT gateway]
+        end
+        s3ep[S3 gateway endpoint]
+    end
+
+    ingress --> msk
+    ecs --> msk
+    connect --> msk
+    connect -->|logical replication| rds
+    cr --> msk
+    cr --> rds
+    PRIV -->|ECR, CloudWatch Logs, Glue, Secrets Manager, CFN response URL| nat
+    PRIV -->|S3| s3ep
+    nat --> igw[Internet gateway]
+```
+
+Notes: the API Gateway is a regional service outside the VPC and invokes the ingress Lambda through the Lambda service. MSK, RDS and the Lambdas have no public addresses. Fargate tasks have no public IPs.
+
+### Glue Schema Registry
+
+- Registry `${EnvName}-msk-ei`. Schema names equal topic names (`integration.account.v1`, `integration.order.v1`, `erp.public.orders`). Compatibility `BACKWARD`, format `AVRO`.
+- Ingress publishes raw JSON with no registry. Services and Debezium use the Glue serializer and the Glue Kafka Connect converter.
+- Glue wire format differs from Confluent. The registry is chosen per deployment (ADR 0002).
+- Glue Schema Registry usage is free (AWS Glue pricing page).
+
+### Local versus AWS configuration
+
+| Setting | Local | AWS |
+|---|---|---|
+| Kafka bootstrap | `localhost:9092` | `BootstrapServers` (IAM listener, port 9098) |
+| Kafka security | plaintext | `KAFKA_SECURITY=iam` |
+| Schema registry | Confluent (`SCHEMA_REGISTRY_URL`) | Glue (`SCHEMA_REGISTRY_TYPE=glue`, `GLUE_REGISTRY_NAME`) |
+| Schema auto-register | `true` | `false` (registered by script) |
+| HMAC secret | `INGRESS_HMAC_SECRET` | `INGRESS_HMAC_SECRET_ARN` (Secrets Manager) |
+| Downstream | local WireMock | `DOWNSTREAM_URL=http://localhost:8080/downstream` (sidecar) |
+| Debezium DB password | `.env` | dynamic reference to the RDS secret |

@@ -30,7 +30,12 @@ Producer settings: `enable.idempotence=true`, `acks=all`, `delivery.timeout.ms=1
 `KAFKA_BOOTSTRAP_SERVERS` and `KAFKA_SECURITY` (`plaintext` or `iam`), see `common`.
 
 Logs are JSON (one object per line) and carry `eventId`. The HMAC secret is never logged.
-On AWS the secret should be read from SSM Parameter Store or Secrets Manager; today it is read from the environment.
+On AWS the secret is read from Secrets Manager (`INGRESS_HMAC_SECRET_ARN`) once per cold start, in the handler's static
+holder, not per request. The secret string is the raw secret (the CloudFormation template creates it with
+`GenerateSecretString` without a JSON template); it is not parsed as JSON. If both `INGRESS_HMAC_SECRET_ARN` and
+`INGRESS_HMAC_SECRET` are set, the ARN wins; the log says which source was used, never the value. The AWS call uses the
+URL-connection HTTP client to keep the jar small. The Lambda needs `secretsmanager:GetSecretValue` on that secret and a
+route to Secrets Manager (NAT).
 
 ## What can go wrong
 
@@ -68,7 +73,8 @@ java -jar ingress-lambda/target/ingress-lambda.jar
 | `KAFKA_SECURITY` | `plaintext` | `plaintext` or `iam` |
 | `INGRESS_PORT` | `8080` | local server port |
 | `INGRESS_API_KEY` | unset | if set, local server requires header `x-api-key` (mimics API Gateway API key) |
-| `INGRESS_HMAC_SECRET` | unset | if set, `X-Signature` is required |
+| `INGRESS_HMAC_SECRET` | unset | if set, `X-Signature` is required (local use) |
+| `INGRESS_HMAC_SECRET_ARN` | unset | Secrets Manager secret holding the raw HMAC secret; wins over `INGRESS_HMAC_SECRET` |
 | `INGRESS_MAX_BODY_BYTES` | `262144` | body size limit |
 
 Try it (leave out `x-api-key` / `X-Signature` if you did not set those variables):

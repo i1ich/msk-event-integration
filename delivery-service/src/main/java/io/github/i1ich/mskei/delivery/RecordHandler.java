@@ -1,9 +1,10 @@
 package io.github.i1ich.mskei.delivery;
 
-import io.confluent.kafka.serializers.KafkaAvroDeserializer;
 import io.github.i1ich.mskei.common.DeadLetters;
 import io.github.i1ich.mskei.common.EventHeaders;
 import io.github.i1ich.mskei.common.Topics;
+import static net.logstash.logback.argument.StructuredArguments.kv;
+
 import java.io.IOException;
 import java.util.Optional;
 import java.util.concurrent.Future;
@@ -12,6 +13,7 @@ import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.producer.Producer;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.clients.producer.RecordMetadata;
+import org.apache.kafka.common.serialization.Deserializer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -22,12 +24,12 @@ import org.slf4j.LoggerFactory;
 public final class RecordHandler {
     private static final Logger log = LoggerFactory.getLogger(RecordHandler.class);
 
-    private final KafkaAvroDeserializer deserializer;
+    private final Deserializer<Object> deserializer;
     private final DownstreamSender sender;
     private final Producer<byte[], byte[]> producer;
     private final RetryRouter router;
 
-    public RecordHandler(KafkaAvroDeserializer deserializer, DownstreamSender sender,
+    public RecordHandler(Deserializer<Object> deserializer, DownstreamSender sender,
             Producer<byte[], byte[]> producer, RetryRouter router) {
         this.deserializer = deserializer;
         this.sender = sender;
@@ -66,8 +68,9 @@ public final class RecordHandler {
         try {
             int status = sender.post(path, eventId, json);
             if (Classifier.classify(status) == Outcome.SUCCESS) {
-                log.info("Delivered eventId={} to {} (attempt {})", eventId, path,
-                        RetryRouter.attemptOf(record.topic()));
+                // One structured line per successful delivery; the AWS smoke test greps eventId + "Delivered".
+                log.info("Delivered", kv("eventId", eventId), kv("path", path), kv("status", status),
+                        kv("attempt", RetryRouter.attemptOf(record.topic())));
                 return Optional.empty();
             }
             failure = new DownstreamException(status);

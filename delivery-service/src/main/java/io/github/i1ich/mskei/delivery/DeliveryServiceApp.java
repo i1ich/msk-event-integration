@@ -1,7 +1,7 @@
 package io.github.i1ich.mskei.delivery;
 
-import io.confluent.kafka.serializers.KafkaAvroDeserializer;
 import io.github.i1ich.mskei.common.KafkaClientConfig;
+import io.github.i1ich.mskei.common.AvroSerdes;
 import io.github.i1ich.mskei.common.SchemaRegistryConfig;
 import io.github.i1ich.mskei.common.Topics;
 import java.time.Clock;
@@ -12,6 +12,7 @@ import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.common.serialization.ByteArrayDeserializer;
 import org.apache.kafka.common.serialization.ByteArraySerializer;
+import org.apache.kafka.common.serialization.Deserializer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -79,8 +80,8 @@ public final class DeliveryServiceApp {
         KafkaProducer<byte[], byte[]> producer =
                 new KafkaProducer<>(producerProps, new ByteArraySerializer(), new ByteArraySerializer());
 
-        KafkaAvroDeserializer avro = new KafkaAvroDeserializer();
-        avro.configure(SchemaRegistryConfig.from(env), false);
+        // Generic records: the delivery body is the record's JSON. Confluent or Glue, chosen by SCHEMA_REGISTRY_TYPE.
+        Deserializer<Object> avro = AvroSerdes.genericValueDeserializer(SchemaRegistryConfig.from(env));
 
         RetryRouter router = new RetryRouter(clock, config.retryDelay1m(), config.retryDelay10m());
         RecordHandler handler = new RecordHandler(avro,

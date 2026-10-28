@@ -1,6 +1,6 @@
 package io.github.i1ich.mskei.processor;
 
-import io.confluent.kafka.serializers.KafkaAvroDeserializer;
+import io.github.i1ich.mskei.common.AvroSerdes;
 import io.github.i1ich.mskei.common.DeadLetters;
 import io.github.i1ich.mskei.schema.OrderEvent;
 import io.github.i1ich.mskei.schema.OrderOp;
@@ -9,6 +9,7 @@ import java.util.List;
 import java.util.Map;
 import org.apache.avro.generic.GenericRecord;
 import org.apache.kafka.common.header.Headers;
+import org.apache.kafka.common.serialization.Deserializer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -21,11 +22,12 @@ import org.slf4j.LoggerFactory;
 public class OrderMapper implements RecordMapper<OrderEvent> {
     private static final Logger LOG = LoggerFactory.getLogger(OrderMapper.class);
 
-    private final KafkaAvroDeserializer deserializer = new KafkaAvroDeserializer();
+    private final Deserializer<Object> deserializer;
 
     /** @param serdeConfig Schema Registry settings (see SchemaRegistryConfig) */
     public OrderMapper(Map<String, ?> serdeConfig) {
-        deserializer.configure(serdeConfig, false);
+        // Generic records: the Debezium envelope has no generated class. Confluent or Glue, chosen by the config.
+        this.deserializer = AvroSerdes.genericValueDeserializer(serdeConfig);
     }
 
     @Override

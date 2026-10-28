@@ -1,12 +1,13 @@
 package io.github.i1ich.mskei.processor;
 
-import io.confluent.kafka.streams.serdes.avro.SpecificAvroSerde;
+import io.github.i1ich.mskei.common.AvroSerdes;
 import io.github.i1ich.mskei.common.Topics;
 import io.github.i1ich.mskei.schema.AccountEvent;
 import io.github.i1ich.mskei.schema.OrderEvent;
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
 import java.util.function.Function;
+import org.apache.kafka.common.serialization.Serde;
 import org.apache.kafka.common.serialization.Serdes;
 import org.apache.kafka.streams.KeyValue;
 import org.apache.kafka.streams.StreamsBuilder;
@@ -56,8 +57,7 @@ public final class ProcessorTopology {
 
     private static <K, V extends SpecificRecord> void route(KStream<K, byte[]> input, RecordMapper<V> mapper,
             Function<K, byte[]> keyBytes, String outputTopic, Class<V> type, Map<String, ?> serdeConfig) {
-        SpecificAvroSerde<V> valueSerde = new SpecificAvroSerde<>();
-        valueSerde.configure(serdeConfig, false);
+        Serde<V> valueSerde = AvroSerdes.specificValueSerde(serdeConfig);
 
         // process() = the new Processor API; one Result per output record (see SafeMapProcessor).
         KStream<String, Result<V>> results = input.process(() -> new SafeMapProcessor<K, V>(mapper, keyBytes));

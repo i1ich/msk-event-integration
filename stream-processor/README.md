@@ -53,10 +53,13 @@ Mapping details worth knowing:
 |---|---|---|
 | `KAFKA_BOOTSTRAP_SERVERS` | required | e.g. `kafka:9092` |
 | `KAFKA_SECURITY` | `plaintext` | `plaintext` or `iam` (Amazon MSK) |
-| `SCHEMA_REGISTRY_URL` | required | Confluent Schema Registry |
+| `SCHEMA_REGISTRY_TYPE` | `confluent` | `confluent` or `glue` (AWS Glue Schema Registry). Chosen per deployment: the wire formats are incompatible, so a topic written with one registry cannot be read with the other |
+| `SCHEMA_REGISTRY_URL` | required for `confluent` | Confluent Schema Registry |
+| `GLUE_REGISTRY_NAME` | required for `glue` | Glue registry; schema name = topic name (default naming strategy), compatibility `BACKWARD`, format `AVRO` |
+| `AWS_REGION` | required for `glue` | region of the Glue registry; credentials from the default AWS provider chain (task role) |
 | `SCHEMA_AUTO_REGISTER` | `true` | set `false` where CI registers schemas |
 | `STREAMS_APPLICATION_ID` | `stream-processor` | consumer group / internal topic prefix |
-| `STREAMS_REPLICATION_FACTOR` | unset (Streams default 1) | set `3` on a multi-broker cluster |
+| `STREAMS_REPLICATION_FACTOR` | unset (Streams default 1) | set `3` on a multi-broker cluster, `-1` on AWS (use the broker default) |
 
 ## Build and run
 

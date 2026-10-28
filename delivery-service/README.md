@@ -94,7 +94,10 @@ code 1 and is restarted by the orchestrator; uncommitted records are processed a
 |---------------------------|-------------|---------|
 | `KAFKA_BOOTSTRAP_SERVERS` | required    | Kafka bootstrap servers |
 | `KAFKA_SECURITY`          | `plaintext` | `plaintext` or `iam` (Amazon MSK) |
-| `SCHEMA_REGISTRY_URL`     | required    | Schema Registry URL |
+| `SCHEMA_REGISTRY_TYPE` | `confluent` | `confluent` or `glue` (AWS Glue Schema Registry). Chosen per deployment: the wire formats are incompatible, so a topic written with one registry cannot be read with the other |
+| `SCHEMA_REGISTRY_URL` | required for `confluent` | Confluent Schema Registry |
+| `GLUE_REGISTRY_NAME` | required for `glue` | Glue registry; schema name = topic name (default naming strategy), compatibility `BACKWARD`, format `AVRO` |
+| `AWS_REGION` | required for `glue` | region of the Glue registry; credentials from the default AWS provider chain (task role) |
 | `DOWNSTREAM_URL`          | required    | Base URL, e.g. `http://wiremock:8080/downstream` |
 | `RETRY_DELAY_1M`          | `PT1M`      | ISO-8601 delay stored in `not-before` for `retry.1m` |
 | `RETRY_DELAY_10M`         | `PT10M`     | ISO-8601 delay stored in `not-before` for `retry.10m` |

@@ -25,11 +25,47 @@
           <groupId>io.confluent</groupId>
           <artifactId>kafka-avro-serializer</artifactId>
         </exclusion>
+        <exclusion>
+          <groupId>io.confluent</groupId>
+          <artifactId>kafka-streams-avro-serde</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>org.apache.kafka</groupId>
+          <artifactId>kafka-streams</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>software.amazon.glue</groupId>
+          <artifactId>schema-registry-serde</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>software.amazon.glue</groupId>
+          <artifactId>schema-registry-kafkastreams-serde</artifactId>
+        </exclusion>
       </exclusions>
     </dependency>
     <dependency>
       <groupId>org.apache.kafka</groupId>
       <artifactId>kafka-clients</artifactId>
+    </dependency>
+    <dependency>
+      <!-- Reads the HMAC secret once per cold start (INGRESS_HMAC_SECRET_ARN). Version from the AWS SDK BOM. -->
+      <groupId>software.amazon.awssdk</groupId>
+      <artifactId>secretsmanager</artifactId>
+      <exclusions>
+        <!-- Small, fast-starting HTTP client instead of Apache/Netty (smaller jar, faster cold start) -->
+        <exclusion>
+          <groupId>software.amazon.awssdk</groupId>
+          <artifactId>apache-client</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>software.amazon.awssdk</groupId>
+          <artifactId>netty-nio-client</artifactId>
+        </exclusion>
+      </exclusions>
+    </dependency>
+    <dependency>
+      <groupId>software.amazon.awssdk</groupId>
+      <artifactId>url-connection-client</artifactId>
     </dependency>
     <dependency>
       <groupId>com.amazonaws</groupId>

@@ -33,6 +33,23 @@
       <groupId>io.confluent</groupId>
       <artifactId>kafka-avro-serializer</artifactId>
     </dependency>
+    <dependency>
+      <groupId>org.apache.kafka</groupId>
+      <artifactId>kafka-streams</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>io.confluent</groupId>
+      <artifactId>kafka-streams-avro-serde</artifactId>
+    </dependency>
+    <dependency>
+      <!-- AWS Glue Schema Registry serializer/deserializer (SCHEMA_REGISTRY_TYPE=glue) -->
+      <groupId>software.amazon.glue</groupId>
+      <artifactId>schema-registry-serde</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>software.amazon.glue</groupId>
+      <artifactId>schema-registry-kafkastreams-serde</artifactId>
+    </dependency>
   </dependencies>
 
   <build>

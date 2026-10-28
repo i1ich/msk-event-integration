@@ -22,8 +22,10 @@ Mapping details worth knowing:
 
 - **Account**: `eventId` = header `event-id` (fallback `<topic>-<partition>-<offset>`). A Salesforce event with several
   `recordIds` produces one `AccountEvent` per id; the `eventId` then gets a `-<index>` suffix so ids stay unique.
-- **Order**: `eventId` = `erp.public.orders-<partition>-<offset>`, deterministic, so a replay produces the same
-  Idempotency-Key downstream. `amount` is a string (`decimal.handling.mode=string`); `updated_at` is an ISO-8601
+- **Order**: `eventId` = `erp.public.orders-<orderId>-<lsn>-<op>`, built from the change's position in the PostgreSQL
+  WAL (`source.lsn`). It is the same however often the change is re-read, including a DLQ replay (which republishes at
+  a new offset), so the downstream Idempotency-Key catches the duplicate. Without an LSN it falls back to
+  `erp.public.orders-<partition>-<offset>` (stable for reprocessing only). `amount` is a string (`decimal.handling.mode=string`); `updated_at` is an ISO-8601
   string (also accepted: epoch millis). For deletes the fields come from `before`.
 - **Tombstones** (null value after a delete) are skipped on purpose: the DELETE event already carries the information;
   tombstones only exist for log compaction.
@@ -59,7 +61,7 @@ Mapping details worth knowing:
 | `AWS_REGION` | required for `glue` | region of the Glue registry; credentials from the default AWS provider chain (task role) |
 | `SCHEMA_AUTO_REGISTER` | `true` | set `false` where CI registers schemas |
 | `STREAMS_APPLICATION_ID` | `stream-processor` | consumer group / internal topic prefix |
-| `STREAMS_REPLICATION_FACTOR` | unset (Streams default 1) | set `3` on a multi-broker cluster, `-1` on AWS (use the broker default) |
+| `STREAMS_REPLICATION_FACTOR` | unset (Kafka Streams default `-1`: the broker default) | AWS sets `-1` explicitly; the 2-broker MSK configuration uses `default.replication.factor=2` |
 
 ## Build and run
 

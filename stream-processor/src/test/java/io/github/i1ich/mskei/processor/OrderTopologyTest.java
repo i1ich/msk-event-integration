@@ -30,7 +30,8 @@ class OrderTopologyTest extends TopologyTestBase {
                 {"name":"updated_at","type":["null","string","long"],"default":null}]}],"default":null},
               {"name":"after","type":["null","Value"],"default":null},
               {"name":"source","type":{"type":"record","name":"Source","fields":[
-                {"name":"ts_ms","type":"long"}]}},
+                {"name":"ts_ms","type":"long"},
+                {"name":"lsn","type":["null","long"],"default":null}]}},
               {"name":"op","type":"string"}]}""");
     private static final Schema VALUE = ENVELOPE.getField("after").schema().getTypes().get(1);
     private static final Schema SOURCE = ENVELOPE.getField("source").schema();
@@ -55,8 +56,13 @@ class OrderTopologyTest extends TopologyTestBase {
     }
 
     private byte[] envelope(String op, GenericRecord before, GenericRecord after) {
+        return envelope(op, before, after, null);
+    }
+
+    private byte[] envelope(String op, GenericRecord before, GenericRecord after, Long lsn) {
         GenericRecord source = new GenericData.Record(SOURCE);
         source.put("ts_ms", 1793127631566L);
+        source.put("lsn", lsn);
         GenericRecord env = new GenericData.Record(ENVELOPE);
         env.put("before", before);
         env.put("after", after);
@@ -110,7 +116,7 @@ class OrderTopologyTest extends TopologyTestBase {
     }
 
     @Test
-    void eventIdIsDeterministicFromPartitionAndOffset() {
+    void eventIdFallsBackToPartitionAndOffsetWithoutLsn() {
         TestOutputTopic<String, OrderEvent> out = output(Topics.ORDER_V1);
 
         ordersIn.pipeInput(key(1), envelope("c", null, row(null)));
@@ -118,6 +124,20 @@ class OrderTopologyTest extends TopologyTestBase {
 
         assertThat(out.readValuesToList()).extracting(OrderEvent::getEventId)
                 .containsExactly("erp.public.orders-0-0", "erp.public.orders-0-1");
+    }
+
+    @Test
+    void eventIdComesFromTheWalPositionSoAReplayedRecordKeepsIt() {
+        TestOutputTopic<String, OrderEvent> out = output(Topics.ORDER_V1);
+
+        // The same change read twice (e.g. replayed from the DLQ) lands at a different offset ...
+        ordersIn.pipeInput(key(1), envelope("u", null, row(null), 26657856L));
+        ordersIn.pipeInput(key(1), envelope("u", null, row(null), 26657856L));
+        // ... and a different change of the same order has a different WAL position.
+        ordersIn.pipeInput(key(1), envelope("d", row(null), null, 26658768L));
+
+        assertThat(out.readValuesToList()).extracting(OrderEvent::getEventId).containsExactly(
+                "erp.public.orders-1-26657856-u", "erp.public.orders-1-26657856-u", "erp.public.orders-1-26658768-d");
     }
 
     @Test

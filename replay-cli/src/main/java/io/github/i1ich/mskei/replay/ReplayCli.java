@@ -40,6 +40,8 @@ public final class ReplayCli implements Callable<Integer> {
             p.put("key.deserializer", "org.apache.kafka.common.serialization.ByteArrayDeserializer");
             p.put("value.deserializer", "org.apache.kafka.common.serialization.ByteArrayDeserializer");
             p.put("enable.auto.commit", "false"); // no group.id on purpose, see DlqReplayer
+            // Part of the DLQ is written inside stream-processor transactions; never replay an aborted record.
+            p.put("isolation.level", "read_committed");
             return new KafkaConsumer<>(p);
         }
 

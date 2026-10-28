@@ -20,6 +20,24 @@ import org.slf4j.LoggerFactory;
  * processor and the DLQ gets the ORIGINAL bytes.
  */
 public class OrderMapper implements RecordMapper<OrderEvent> {
+    /**
+     * Deterministic eventId, which becomes the downstream Idempotency-Key.
+     *
+     * <p>Preferred: the change's position in the PostgreSQL WAL ({@code source.lsn}). It is the same however often the
+     * change is re-read: reprocessing, a connector restart, AND a DLQ replay (replay-cli republishes the record at a NEW
+     * offset, so an offset-based id would change and the downstream could not detect the duplicate). Snapshot rows share
+     * one LSN, so the order id and op are part of the key.
+     *
+     * <p>Fallback when the envelope has no LSN: the Kafka coordinates (stable for reprocessing, not for replay).
+     */
+    static String eventId(GenericRecord sourceInfo, long orderId, String op, DeadLetters.Source source) {
+        Object lsn = sourceInfo.getSchema().getField("lsn") == null ? null : sourceInfo.get("lsn");
+        if (lsn instanceof Number walPosition) {
+            return source.topic() + "-" + orderId + "-" + walPosition.longValue() + "-" + op;
+        }
+        return source.topic() + "-" + source.partition() + "-" + source.offset();
+    }
+
     private static final Logger LOG = LoggerFactory.getLogger(OrderMapper.class);
 
     private final Deserializer<Object> deserializer;
@@ -58,13 +76,13 @@ public class OrderMapper implements RecordMapper<OrderEvent> {
         if (!(id instanceof Number orderId)) {
             throw new IllegalArgumentException("Order row has no numeric id");
         }
-        Object tsMs = ((GenericRecord) envelope.get("source")).get("ts_ms");
+        GenericRecord sourceInfo = (GenericRecord) envelope.get("source");
+        Object tsMs = sourceInfo.get("ts_ms");
         if (!(tsMs instanceof Number sourceTsMs)) {
             throw new IllegalArgumentException("Envelope source.ts_ms is missing");
         }
 
-        // Deterministic: a replay of the same Kafka record gets the same eventId, hence the same Idempotency-Key.
-        String eventId = source.topic() + "-" + source.partition() + "-" + source.offset();
+        String eventId = eventId(sourceInfo, orderId.longValue(), op, source);
         OrderEvent event = OrderEvent.newBuilder()
                 .setEventId(eventId)
                 .setOrderId(orderId.longValue())

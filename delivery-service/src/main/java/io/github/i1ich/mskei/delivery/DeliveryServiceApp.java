@@ -105,6 +105,9 @@ public final class DeliveryServiceApp {
         props.put("group.id", groupId);
         // We commit by hand, after the work is done (see ConsumerLoop).
         props.put("enable.auto.commit", "false");
+        // The canonical topics are written by stream-processor with exactly_once_v2 (transactions). Without
+        // read_committed this consumer would also see records of aborted transactions and deliver them downstream.
+        props.put("isolation.level", "read_committed");
         props.put("auto.offset.reset", "earliest");
         // Small batches: one slow downstream must not make a poll cycle take minutes.
         props.put("max.poll.records", "50");

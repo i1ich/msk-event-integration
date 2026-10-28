@@ -15,4 +15,15 @@
 | `snapshot.mode=initial` | Snapshot existing rows once, then stream changes. |
 | Avro converters | Key/value serialized as Avro, schemas stored in Schema Registry. |
 
-`orders-source.msk-connect.json` is a template with `${...}` placeholders for MSK Connect; it is not used locally.
+
+
+## On AWS (MSK Connect)
+
+`infra/cloudformation/msk-connect.yaml` is the real source of the connector configuration on AWS.
+`orders-source.msk-connect.json` is only a readable reference of the same settings (it is not applied by any script).
+Differences from the local file: JSON key converter, AWS Glue Schema Registry value converter
+(`AWSKafkaAvroConverter`), RDS host and a Secrets Manager reference for the password.
+
+The plugin zip is built reproducibly with `scripts/build-connect-plugin.sh` from `infra/connect/plugin/pom.xml`
+(Debezium PostgreSQL 2.5.4.Final + Glue Schema Registry converter 1.1.27, pinned). Kafka and slf4j jars are excluded
+because the Connect runtime provides them.

@@ -1,14 +1,14 @@
 {
-  "_comment": "TEMPLATE for MSK Connect (later milestone). NOT used locally. Replace the ${...} placeholders; the schema registry endpoint and DB secrets are environment specific (use a config provider for secrets).",
+  "_comment": "Readable REFERENCE of the MSK Connect connector config. The real source on AWS is infra/cloudformation/msk-connect.yaml (see CONTRACT.md). Placeholders: ${DB_HOST}=DbEndpoint, ${DB_SECRET_ARN}=Secrets Manager secret of the RDS user, ${AWS_REGION}, ${GLUE_REGISTRY_NAME}. The password is a CloudFormation dynamic reference, resolved at deploy time.",
   "name": "orders-source",
   "config": {
     "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
     "tasks.max": "1",
     "database.hostname": "${DB_HOST}",
-    "database.port": "${DB_PORT}",
-    "database.user": "${DB_USER}",
-    "database.password": "${DB_PASSWORD}",
-    "database.dbname": "${DB_NAME}",
+    "database.port": "5432",
+    "database.user": "erp",
+    "database.password": "{{resolve:secretsmanager:${DB_SECRET_ARN}:SecretString:password}}",
+    "database.dbname": "erp",
     "plugin.name": "pgoutput",
     "publication.name": "dbz_orders_pub",
     "publication.autocreate.mode": "disabled",
@@ -19,9 +19,13 @@
     "time.precision.mode": "connect",
     "tombstones.on.delete": "true",
     "snapshot.mode": "initial",
-    "key.converter": "io.confluent.connect.avro.AvroConverter",
-    "key.converter.schema.registry.url": "${SCHEMA_REGISTRY_URL}",
-    "value.converter": "io.confluent.connect.avro.AvroConverter",
-    "value.converter.schema.registry.url": "${SCHEMA_REGISTRY_URL}"
+    "key.converter": "org.apache.kafka.connect.json.JsonConverter",
+    "key.converter.schemas.enable": "false",
+    "value.converter": "com.amazonaws.services.schemaregistry.kafkaconnect.AWSKafkaAvroConverter",
+    "value.converter.region": "${AWS_REGION}",
+    "value.converter.registry.name": "${GLUE_REGISTRY_NAME}",
+    "value.converter.schemaAutoRegistrationEnabled": "true",
+    "value.converter.avroRecordType": "GENERIC_RECORD",
+    "value.converter.compatibility": "BACKWARD"
   }
 }

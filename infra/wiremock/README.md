@@ -16,3 +16,11 @@ Two magic account ids drive the demo:
 
 The scenario state is global per WireMock process: the "fail once" happens once per account endpoint until
 WireMock is restarted (or `POST /__admin/scenarios/reset` is called).
+
+## Image for AWS
+
+`Dockerfile` bakes `mappings/` into `wiremock/wiremock:3.10.0`; the ECS delivery task runs it as a sidecar
+(`DOWNSTREAM_URL=http://localhost:8080/downstream`). The build context is the **repo root** so the path to the
+mappings is the same as in the repo:
+
+    docker build -f infra/wiremock/Dockerfile -t downstream-mock .

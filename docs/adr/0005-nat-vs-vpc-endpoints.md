@@ -17,7 +17,7 @@ Two ways to reach these from private subnets:
 1. One NAT gateway in a public subnet, with routes from the private subnets to it.
 2. Interface VPC endpoints for `ecr.api`, `ecr.dkr`, `logs`, `glue`, and `secretsmanager`, one per AZ. S3 uses a gateway endpoint in both options.
 
-Prices are from `docs/cost.md` (checked 2026-10-27). The sa-east-1 hourly prices for NAT and interface endpoints are **not readable** from the AWS pricing pages, so the comparison below states quantities, not dollar amounts. Verify in the AWS Pricing Calculator before deploy.
+Prices are from `docs/cost.md` (AWS Price List bulk API, sa-east-1, read 2026-10-27): one NAT gateway costs 0.093 USD/h plus 0.005 USD/h for its public IPv4 address (0.098 USD/h); the five interface endpoints cost 5 × 0.021 = 0.105 USD/h in one AZ or 0.21 USD/h in both AZs. Data processing (0.093 USD/GB through NAT) is negligible for demo traffic.
 
 ## Decision
 

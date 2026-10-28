@@ -1,6 +1,6 @@
 # Architecture
 
-Status: M1 in progress. Sections marked `TODO (M2)` describe planned behavior that is not yet implemented.
+Status: M1–M3 implemented and tested locally; M4 (AWS) templates in progress. Remaining `TODO` markers are cleaned up in M5.
 
 ## Components
 
@@ -88,7 +88,7 @@ Every record written to `integration.dlq` carries these headers:
 | Header | Meaning |
 |---|---|
 | `error-class` | Exception class name that caused the failure |
-| `error-message` | Exception message (truncated; `TODO (M2)`: confirm limit) |
+| `error-message` | Exception message (truncated to 1000 characters) |
 | `source-topic` | Topic the record was read from; replay returns it here |
 | `source-partition` | Partition of the source record |
 | `source-offset` | Offset of the source record |

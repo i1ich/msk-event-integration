@@ -59,15 +59,15 @@ the readable source. Re-check before each deploy; actual cost is recorded after 
 
 | Item | Hours or units used | Actual cost (USD) | Notes |
 |---|---|---|---|
-| MSK (provisioned, 2 brokers) | `TODO (M4)` | `TODO (M4)` | |
-| MSK Connect (1 MCU) | `TODO (M4)` | `TODO (M4)` | |
-| RDS `db.t4g.micro` + gp3 | `TODO (M4)` | `TODO (M4)` | |
-| NAT gateway + data processed | `TODO (M4)` | `TODO (M4)` | |
-| Public IPv4 | `TODO (M4)` | `TODO (M4)` | |
-| Fargate (2 tasks) | `TODO (M4)` | `TODO (M4)` | |
-| Lambda, API Gateway, Secrets Manager | `TODO (M4)` | `TODO (M4)` | |
-| CloudWatch, ECR, S3, data transfer | `TODO (M4)` | `TODO (M4)` | |
-| **Total** | | `TODO (M4)` | |
+| MSK (provisioned, 2 brokers) | pending AWS run | pending AWS run | |
+| MSK Connect (1 MCU) | pending AWS run | pending AWS run | |
+| RDS `db.t4g.micro` + gp3 | pending AWS run | pending AWS run | |
+| NAT gateway + data processed | pending AWS run | pending AWS run | |
+| Public IPv4 | pending AWS run | pending AWS run | |
+| Fargate (2 tasks) | pending AWS run | pending AWS run | |
+| Lambda, API Gateway, Secrets Manager | pending AWS run | pending AWS run | |
+| CloudWatch, ECR, S3, data transfer | pending AWS run | pending AWS run | |
+| **Total** | | pending AWS run | |
 
 ## Session log
 
@@ -77,4 +77,4 @@ the readable source. Re-check before each deploy; actual cost is recorded after 
 
 ## Cost by option
 
-`TODO (M4)`: compare the MSK provisioned cluster with MSK Serverless, measured on the same workload. MSK Serverless is not available in sa-east-1, so this comparison can only be made in a supported region with measured values.
+Pending (needs a region with MSK Serverless): compare the MSK provisioned cluster with MSK Serverless, measured on the same workload. MSK Serverless is not available in sa-east-1, so this comparison can only be made in a supported region with measured values.

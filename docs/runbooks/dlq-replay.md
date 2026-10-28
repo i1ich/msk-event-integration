@@ -1,6 +1,6 @@
 # Runbook: DLQ replay
 
-Tool: [replay-cli](../../replay-cli/README.md). Build once: `mvn -q -B -pl replay-cli -am package`.
+Tool: [replay-cli](../../replay-cli/README.md). Build once: `mvn -q -B -pl replay-cli -am package -DskipTests` (produces `replay-cli/target/replay-cli.jar`).
 
 ## When to use
 
@@ -17,6 +17,10 @@ docker compose exec -T kafka kafka-console-consumer --bootstrap-server kafka:290
 ```
 
 Look at the headers: `error-class`, `error-message`, `source-topic`, `source-partition`, `source-offset`, `failed-at`, `attempts`, plus the original `event-id`.
+
+Quicker overview without a console consumer (works on AWS too, see "AWS variant"; set `KAFKA_BOOTSTRAP_SERVERS=localhost:9092` locally): `java -jar replay-cli/target/replay-cli.jar --dry-run` prints one line per record (partition, offset, source-topic, error-class, event-id, key) and a summary. Group the output by error class.
+
+For the local `docker compose` stack the Kafka UI also works: `docker compose --profile ui up -d kafka-ui`, then http://localhost:8090 (topic `integration.dlq`).
 
 ## 2. Find the root cause
 
@@ -58,7 +62,7 @@ java -jar replay-cli/target/replay-cli.jar --source-topic integration.account.v1
   --rate 10
 ```
 
-Keep `--rate` well below downstream capacity. For MSK use `KAFKA_SECURITY=iam` and the MSK bootstrap string.
+Keep `--rate` well below downstream capacity.
 Exit code 0 and `failed=0` in the summary mean every record was acknowledged by the broker.
 
 ## 6. Verify
@@ -84,3 +88,15 @@ the exact command, time, the summary line, and the `--from`/`--to` window. Repla
 - Replay only after the root cause is fixed; always `--dry-run` first; prefer narrow filters.
 - Replay does not restore original ordering. See [architecture ordering](../architecture.md#ordering-per-key-and-partitions).
 - The tool never commits offsets and uses no consumer group, so it does not affect any running consumer.
+
+## AWS variant
+
+The procedure is the same; only the connection differs.
+
+- `replay-cli` reads and writes record bytes without decoding them, so it needs no schema registry settings, on Confluent or Glue alike.
+- Set `KAFKA_SECURITY=iam` and `KAFKA_BOOTSTRAP_SERVERS` to the MSK IAM bootstrap string (`BootstrapBrokerStringSaslIam` from `aws kafka get-bootstrap-brokers --cluster-arn <arn>`). The caller needs AWS credentials whose IAM policy allows reading `integration.dlq` and writing the target topics (the stack roles do not include an operator role; add one before using it), and a network path into the VPC (the brokers are private).
+- `--bootstrap-servers <host:port,...>` can be used instead of the environment variable.
+- Console consumers cannot decode Glue-encoded Avro, but the DLQ headers are plain strings, so `--dry-run` shows everything needed to decide.
+- Verify with the CloudWatch dashboard (DLQ `BytesInPerSec`, consumer lag) and the `delivery-service` log group.
+
+Not yet exercised on AWS (deploy pending Paid plan).

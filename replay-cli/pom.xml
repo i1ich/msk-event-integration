@@ -16,7 +16,6 @@
       <groupId>io.github.i1ich.mskei</groupId>
       <artifactId>common</artifactId>
       <exclusions>
-        <!-- Avro / Schema Registry are not used here: the CLI copies raw bytes -->
         <exclusion>
           <groupId>org.apache.avro</groupId>
           <artifactId>avro</artifactId>
@@ -24,6 +23,22 @@
         <exclusion>
           <groupId>io.confluent</groupId>
           <artifactId>kafka-avro-serializer</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>io.confluent</groupId>
+          <artifactId>kafka-streams-avro-serde</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>org.apache.kafka</groupId>
+          <artifactId>kafka-streams</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>software.amazon.glue</groupId>
+          <artifactId>schema-registry-serde</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>software.amazon.glue</groupId>
+          <artifactId>schema-registry-kafkastreams-serde</artifactId>
         </exclusion>
       </exclusions>
     </dependency>

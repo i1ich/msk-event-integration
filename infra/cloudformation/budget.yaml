@@ -1,14 +1,22 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >-
-  msk-event-integration - account-level AWS Budget (monthly cost limit with e-mail alerts).
+  msk-event-integration - account-level AWS Budgets: a monthly cost limit and a daily one, both with e-mail alerts.
+  Budgets only alert; they never stop resources. The daily budget catches a forgotten stack within the same day.
   Deploy FIRST and only once per account; it is not tied to an environment and is kept by teardown.
 
 Parameters:
   MonthlyLimitUsd:
     Type: Number
-    Default: 20
+    Default: 15
     MinValue: 1
     Description: Monthly cost limit in USD.
+  DailyLimitUsd:
+    Type: Number
+    Default: 3
+    MinValue: 1
+    Description: >-
+      Daily cost limit in USD. The full stack costs about 0.55 USD/h (docs/cost.md), so 3 USD is reached after
+      roughly 5-6 hours of running: a forgotten deployment triggers an e-mail the same day.
   AlertEmail:
     Type: String
     AllowedPattern: '^[^@\s]+@[^@\s]+\.[^@\s]+$'
@@ -39,6 +47,28 @@ Resources:
         # The forecast says the month will end above the limit (fires before the money is spent).
         - Notification:
             NotificationType: FORECASTED
+            ComparisonOperator: GREATER_THAN
+            Threshold: 100
+            ThresholdType: PERCENTAGE
+          Subscribers:
+            - SubscriptionType: EMAIL
+              Address: !Ref AlertEmail
+
+  DailyCostBudget:
+    Type: AWS::Budgets::Budget
+    Properties:
+      Budget:
+        BudgetName: msk-ei-daily-cost
+        BudgetType: COST
+        TimeUnit: DAILY
+        BudgetLimit:
+          Amount: !Ref DailyLimitUsd
+          Unit: USD
+      NotificationsWithSubscribers:
+        # Daily budgets support ACTUAL notifications only (no forecast). Billing data lags by several hours,
+        # so this is a same-day safety net, not a real-time limit.
+        - Notification:
+            NotificationType: ACTUAL
             ComparisonOperator: GREATER_THAN
             Threshold: 100
             ThresholdType: PERCENTAGE

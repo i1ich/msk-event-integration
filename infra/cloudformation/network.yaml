@@ -1,0 +1,236 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  msk-event-integration - VPC with two private subnets, one public subnet with a single NAT gateway,
+  S3 gateway endpoint and the three security groups (client, MSK, database).
+
+Parameters:
+  EnvName:
+    Type: String
+    Default: dev
+    AllowedPattern: '[a-z][a-z0-9-]{1,15}'
+    Description: Environment name; prefix of every stack, resource and export.
+  VpcCidr:
+    Type: String
+    Default: 10.40.0.0/16
+    Description: CIDR block of the VPC.
+
+Resources:
+  Vpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCidr
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - { Key: Name, Value: !Sub '${EnvName}-msk-ei' }
+        - { Key: Project, Value: msk-event-integration }
+        - { Key: Env, Value: !Ref EnvName }
+
+  # --- Subnets (carved from the VPC CIDR; /24 each) ---------------------------------------------------------------
+  PrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Select [0, !GetAZs '']
+      CidrBlock: !Select [0, !Cidr [!GetAtt Vpc.CidrBlock, 4, 8]]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - { Key: Name, Value: !Sub '${EnvName}-msk-ei-private-1' }
+        - { Key: Project, Value: msk-event-integration }
+        - { Key: Env, Value: !Ref EnvName }
+
+  PrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Select [1, !GetAZs '']
+      CidrBlock: !Select [1, !Cidr [!GetAtt Vpc.CidrBlock, 4, 8]]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - { Key: Name, Value: !Sub '${EnvName}-msk-ei-private-2' }
+        - { Key: Project, Value: msk-event-integration }
+        - { Key: Env, Value: !Ref EnvName }
+
+  # Public subnet exists only to host the NAT gateway.
+  PublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Select [0, !GetAZs '']
+      CidrBlock: !Select [2, !Cidr [!GetAtt Vpc.CidrBlock, 4, 8]]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - { Key: Name, Value: !Sub '${EnvName}-msk-ei-public' }
+        - { Key: Project, Value: msk-event-integration }
+        - { Key: Env, Value: !Ref EnvName }
+
+  # --- Internet access: IGW for the public subnet, ONE NAT gateway for the private ones -------------------------
+  # Why NAT: Fargate (ECR, CloudWatch Logs), Lambdas (Secrets Manager) and the services (Glue Schema Registry)
+  # need AWS APIs. One NAT gateway is cheaper than five interface endpoints per AZ (ADR 0005). One NAT in a
+  # single AZ is a deliberate demo trade-off: no AZ redundancy for outbound traffic.
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - { Key: Name, Value: !Sub '${EnvName}-msk-ei' }
+        - { Key: Project, Value: msk-event-integration }
+        - { Key: Env, Value: !Ref EnvName }
+
+  GatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref Vpc
+      InternetGatewayId: !Ref InternetGateway
+
+  NatEip:
+    Type: AWS::EC2::EIP
+    DependsOn: GatewayAttachment
+    Properties:
+      Domain: vpc
+      Tags:
+        - { Key: Name, Value: !Sub '${EnvName}-msk-ei-nat' }
+        - { Key: Project, Value: msk-event-integration }
+        - { Key: Env, Value: !Ref EnvName }
+
+  NatGateway:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatEip.AllocationId
+      SubnetId: !Ref PublicSubnet
+      Tags:
+        - { Key: Name, Value: !Sub '${EnvName}-msk-ei' }
+        - { Key: Project, Value: msk-event-integration }
+        - { Key: Env, Value: !Ref EnvName }
+
+  # --- Route tables ------------------------------------------------------------------------------------------------
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+        - { Key: Name, Value: !Sub '${EnvName}-msk-ei-public' }
+        - { Key: Project, Value: msk-event-integration }
+        - { Key: Env, Value: !Ref EnvName }
+
+  PublicDefaultRoute:
+    Type: AWS::EC2::Route
+    DependsOn: GatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnetAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet
+      RouteTableId: !Ref PublicRouteTable
+
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+        - { Key: Name, Value: !Sub '${EnvName}-msk-ei-private' }
+        - { Key: Project, Value: msk-event-integration }
+        - { Key: Env, Value: !Ref EnvName }
+
+  PrivateDefaultRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway
+
+  PrivateSubnet1Association:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet1
+      RouteTableId: !Ref PrivateRouteTable
+
+  PrivateSubnet2Association:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet2
+      RouteTableId: !Ref PrivateRouteTable
+
+  # Free gateway endpoint: S3 traffic (Lambda code, Connect plugin, ECR image layers) bypasses the NAT gateway,
+  # which saves per-GB NAT processing charges.
+  S3GatewayEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref Vpc
+      VpcEndpointType: Gateway
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.s3'
+      RouteTableIds:
+        - !Ref PrivateRouteTable
+
+  # --- Security groups ---------------------------------------------------------------------------------------------
+  # Attached to Lambdas, ECS tasks, MSK Connect workers and the bootstrap Lambdas.
+  ClientSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Clients of MSK and the database (Lambdas, ECS tasks, MSK Connect). Egress all.
+      VpcId: !Ref Vpc
+      Tags:
+        - { Key: Name, Value: !Sub '${EnvName}-msk-ei-client' }
+        - { Key: Project, Value: msk-event-integration }
+        - { Key: Env, Value: !Ref EnvName }
+
+  MskSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: MSK brokers. Kafka over TLS with IAM auth (9098) from clients only.
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 9098
+          ToPort: 9098
+          SourceSecurityGroupId: !GetAtt ClientSecurityGroup.GroupId
+          Description: Kafka IAM from clients
+      Tags:
+        - { Key: Name, Value: !Sub '${EnvName}-msk-ei-msk' }
+        - { Key: Project, Value: msk-event-integration }
+        - { Key: Env, Value: !Ref EnvName }
+
+  DbSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: PostgreSQL from clients only.
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          SourceSecurityGroupId: !GetAtt ClientSecurityGroup.GroupId
+          Description: PostgreSQL from clients
+      Tags:
+        - { Key: Name, Value: !Sub '${EnvName}-msk-ei-db' }
+        - { Key: Project, Value: msk-event-integration }
+        - { Key: Env, Value: !Ref EnvName }
+
+Outputs:
+  VpcId:
+    Value: !Ref Vpc
+    Export:
+      Name: !Sub '${EnvName}-msk-ei-VpcId'
+  PrivateSubnet1:
+    Value: !Ref PrivateSubnet1
+    Export:
+      Name: !Sub '${EnvName}-msk-ei-PrivateSubnet1'
+  PrivateSubnet2:
+    Value: !Ref PrivateSubnet2
+    Export:
+      Name: !Sub '${EnvName}-msk-ei-PrivateSubnet2'
+  ClientSecurityGroup:
+    Value: !GetAtt ClientSecurityGroup.GroupId
+    Export:
+      Name: !Sub '${EnvName}-msk-ei-ClientSecurityGroup'
+  MskSecurityGroup:
+    Value: !GetAtt MskSecurityGroup.GroupId
+    Export:
+      Name: !Sub '${EnvName}-msk-ei-MskSecurityGroup'
+  DbSecurityGroup:
+    Value: !GetAtt DbSecurityGroup.GroupId
+    Export:
+      Name: !Sub '${EnvName}-msk-ei-DbSecurityGroup'

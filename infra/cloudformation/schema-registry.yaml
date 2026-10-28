@@ -1,0 +1,31 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  msk-event-integration - AWS Glue Schema Registry. Schemas are registered from schemas/ by
+  scripts/register-schemas-glue.sh (the repository stays the source of truth).
+
+Parameters:
+  EnvName:
+    Type: String
+    Default: dev
+    AllowedPattern: '[a-z][a-z0-9-]{1,15}'
+    Description: Environment name; prefix of every stack, resource and export.
+
+Resources:
+  Registry:
+    Type: AWS::Glue::Registry
+    Properties:
+      Name: !Sub '${EnvName}-msk-ei'
+      Description: Avro schemas of the MSK event integration.
+      Tags:
+        - { Key: Project, Value: msk-event-integration }
+        - { Key: Env, Value: !Ref EnvName }
+
+Outputs:
+  RegistryName:
+    Value: !Sub '${EnvName}-msk-ei'
+    Export:
+      Name: !Sub '${EnvName}-msk-ei-RegistryName'
+  RegistryArn:
+    Value: !GetAtt Registry.Arn
+    Export:
+      Name: !Sub '${EnvName}-msk-ei-RegistryArn'

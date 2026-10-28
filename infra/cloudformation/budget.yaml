@@ -1,0 +1,47 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  msk-event-integration - account-level AWS Budget (monthly cost limit with e-mail alerts).
+  Deploy FIRST and only once per account; it is not tied to an environment and is kept by teardown.
+
+Parameters:
+  MonthlyLimitUsd:
+    Type: Number
+    Default: 20
+    MinValue: 1
+    Description: Monthly cost limit in USD.
+  AlertEmail:
+    Type: String
+    AllowedPattern: '^[^@\s]+@[^@\s]+\.[^@\s]+$'
+    ConstraintDescription: Must be an e-mail address.
+    Description: Address that receives the budget alerts (supplied at deploy time, never committed).
+
+Resources:
+  MonthlyCostBudget:
+    Type: AWS::Budgets::Budget
+    Properties:
+      Budget:
+        BudgetName: msk-ei-monthly-cost
+        BudgetType: COST
+        TimeUnit: MONTHLY
+        BudgetLimit:
+          Amount: !Ref MonthlyLimitUsd
+          Unit: USD
+      NotificationsWithSubscribers:
+        # Early warning: real spend crossed 80% of the limit.
+        - Notification:
+            NotificationType: ACTUAL
+            ComparisonOperator: GREATER_THAN
+            Threshold: 80
+            ThresholdType: PERCENTAGE
+          Subscribers:
+            - SubscriptionType: EMAIL
+              Address: !Ref AlertEmail
+        # The forecast says the month will end above the limit (fires before the money is spent).
+        - Notification:
+            NotificationType: FORECASTED
+            ComparisonOperator: GREATER_THAN
+            Threshold: 100
+            ThresholdType: PERCENTAGE
+          Subscribers:
+            - SubscriptionType: EMAIL
+              Address: !Ref AlertEmail

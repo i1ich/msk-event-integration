@@ -1,0 +1,156 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  msk-event-integration - creates the Kafka topics from scripts/topics.txt through a CloudFormation custom
+  resource backed by the infra-bootstrap Lambda (TopicsHandler).
+
+Parameters:
+  EnvName:
+    Type: String
+    Default: dev
+    AllowedPattern: '[a-z][a-z0-9-]{1,15}'
+    Description: Environment name; prefix of every stack, resource and export.
+  BootstrapServers:
+    Type: String
+    MinLength: 1
+    Description: MSK IAM bootstrap brokers (BootstrapBrokerStringSaslIam), read by deploy.sh after the msk stack.
+  BootstrapArtifactKey:
+    Type: String
+    MinLength: 1
+    Description: S3 key of the infra-bootstrap jar in the artifacts bucket, e.g. lambda/infra-bootstrap-<gitsha>.jar.
+  TopicPartitions:
+    Type: Number
+    Default: 3
+    MinValue: 1
+    Description: Partitions per topic.
+  ReplicationFactor:
+    Type: Number
+    Default: -1
+    Description: Replication factor; -1 uses the broker default (2 on the 2-broker cluster).
+  TopicsVersion:
+    Type: String
+    Default: '1'
+    Description: Change this value to make CloudFormation re-run the topic creation on a stack update.
+
+Resources:
+  # Why a custom resource: CloudFormation has no resource type for Kafka topics, and the brokers are only
+  # reachable from inside the VPC, so the Lambda runs in the private subnets with the client security group.
+  FunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${EnvName}-msk-ei-topics'
+      RetentionInDays: 7
+      Tags:
+        - { Key: Project, Value: msk-event-integration }
+        - { Key: Env, Value: !Ref EnvName }
+
+  FunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      # VPC network interfaces + CloudWatch Logs.
+      ManagedPolicyArns:
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole'
+      Policies:
+        - PolicyName: kafka-topics
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - kafka-cluster:Connect
+                  - kafka-cluster:DescribeCluster
+                Resource: !ImportValue
+                  Fn::Sub: '${EnvName}-msk-ei-ClusterArn'
+              - Effect: Allow
+                Action:
+                  - kafka-cluster:CreateTopic
+                  - kafka-cluster:DescribeTopic
+                  - kafka-cluster:AlterTopic
+                Resource:
+                  # topic ARN = cluster ARN with ":cluster/" replaced by ":topic/" plus "/<topic>"
+                  - !Sub
+                    - 'arn:${AWS::Partition}:kafka:${AWS::Region}:${AWS::AccountId}:topic/${Name}/${Uuid}/${Topic}'
+                    - Name: !Select [1, !Split ['/', !ImportValue { 'Fn::Sub': '${EnvName}-msk-ei-ClusterArn' }]]
+                      Uuid: !Select [2, !Split ['/', !ImportValue { 'Fn::Sub': '${EnvName}-msk-ei-ClusterArn' }]]
+                      Topic: sf.change-events.raw
+                  - !Sub
+                    - 'arn:${AWS::Partition}:kafka:${AWS::Region}:${AWS::AccountId}:topic/${Name}/${Uuid}/${Topic}'
+                    - Name: !Select [1, !Split ['/', !ImportValue { 'Fn::Sub': '${EnvName}-msk-ei-ClusterArn' }]]
+                      Uuid: !Select [2, !Split ['/', !ImportValue { 'Fn::Sub': '${EnvName}-msk-ei-ClusterArn' }]]
+                      Topic: erp.public.orders
+                  - !Sub
+                    - 'arn:${AWS::Partition}:kafka:${AWS::Region}:${AWS::AccountId}:topic/${Name}/${Uuid}/${Topic}'
+                    - Name: !Select [1, !Split ['/', !ImportValue { 'Fn::Sub': '${EnvName}-msk-ei-ClusterArn' }]]
+                      Uuid: !Select [2, !Split ['/', !ImportValue { 'Fn::Sub': '${EnvName}-msk-ei-ClusterArn' }]]
+                      Topic: integration.account.v1
+                  - !Sub
+                    - 'arn:${AWS::Partition}:kafka:${AWS::Region}:${AWS::AccountId}:topic/${Name}/${Uuid}/${Topic}'
+                    - Name: !Select [1, !Split ['/', !ImportValue { 'Fn::Sub': '${EnvName}-msk-ei-ClusterArn' }]]
+                      Uuid: !Select [2, !Split ['/', !ImportValue { 'Fn::Sub': '${EnvName}-msk-ei-ClusterArn' }]]
+                      Topic: integration.order.v1
+                  - !Sub
+                    - 'arn:${AWS::Partition}:kafka:${AWS::Region}:${AWS::AccountId}:topic/${Name}/${Uuid}/${Topic}'
+                    - Name: !Select [1, !Split ['/', !ImportValue { 'Fn::Sub': '${EnvName}-msk-ei-ClusterArn' }]]
+                      Uuid: !Select [2, !Split ['/', !ImportValue { 'Fn::Sub': '${EnvName}-msk-ei-ClusterArn' }]]
+                      Topic: integration.retry.1m
+                  - !Sub
+                    - 'arn:${AWS::Partition}:kafka:${AWS::Region}:${AWS::AccountId}:topic/${Name}/${Uuid}/${Topic}'
+                    - Name: !Select [1, !Split ['/', !ImportValue { 'Fn::Sub': '${EnvName}-msk-ei-ClusterArn' }]]
+                      Uuid: !Select [2, !Split ['/', !ImportValue { 'Fn::Sub': '${EnvName}-msk-ei-ClusterArn' }]]
+                      Topic: integration.retry.10m
+                  - !Sub
+                    - 'arn:${AWS::Partition}:kafka:${AWS::Region}:${AWS::AccountId}:topic/${Name}/${Uuid}/${Topic}'
+                    - Name: !Select [1, !Split ['/', !ImportValue { 'Fn::Sub': '${EnvName}-msk-ei-ClusterArn' }]]
+                      Uuid: !Select [2, !Split ['/', !ImportValue { 'Fn::Sub': '${EnvName}-msk-ei-ClusterArn' }]]
+                      Topic: integration.dlq
+      Tags:
+        - { Key: Project, Value: msk-event-integration }
+        - { Key: Env, Value: !Ref EnvName }
+
+  Function:
+    Type: AWS::Lambda::Function
+    DependsOn: FunctionLogGroup
+    Properties:
+      FunctionName: !Sub '${EnvName}-msk-ei-topics'
+      Runtime: java21
+      Handler: io.github.i1ich.mskei.bootstrap.TopicsHandler::handleRequest
+      Code:
+        S3Bucket: !ImportValue
+          Fn::Sub: '${EnvName}-msk-ei-ArtifactsBucket'
+        S3Key: !Ref BootstrapArtifactKey
+      Role: !GetAtt FunctionRole.Arn
+      Timeout: 300
+      MemorySize: 512
+      Environment:
+        Variables:
+          KAFKA_BOOTSTRAP_SERVERS: !Ref BootstrapServers
+          KAFKA_SECURITY: iam
+      VpcConfig:
+        SubnetIds:
+          - !ImportValue
+            Fn::Sub: '${EnvName}-msk-ei-PrivateSubnet1'
+          - !ImportValue
+            Fn::Sub: '${EnvName}-msk-ei-PrivateSubnet2'
+        SecurityGroupIds:
+          - !ImportValue
+            Fn::Sub: '${EnvName}-msk-ei-ClientSecurityGroup'
+      Tags:
+        - { Key: Project, Value: msk-event-integration }
+        - { Key: Env, Value: !Ref EnvName }
+
+  KafkaTopics:
+    Type: Custom::KafkaTopics
+    Properties:
+      ServiceToken: !GetAtt Function.Arn
+      Partitions: !Ref TopicPartitions
+      ReplicationFactor: !Ref ReplicationFactor
+      Version: !Ref TopicsVersion
+
+Outputs:
+  TopicsFunctionName:
+    Value: !Ref Function

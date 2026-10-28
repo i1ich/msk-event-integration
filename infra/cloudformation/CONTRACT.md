@@ -26,7 +26,7 @@ this file disagree, this file wins; change it first, then the code.
 | # | Template | Stack | Purpose | Exports (all prefixed `${EnvName}-msk-ei-`) |
 |---|---|---|---|---|
 | 0 | `budget.yaml` | `msk-ei-budget` (account-level, no EnvName) | AWS Budget, monthly cost limit (default 20 USD), email alerts at 80% actual / 100% forecast. Deployed FIRST, once. | – |
-| 0 | `github-oidc.yaml` | `msk-ei-github-oidc` (once, optional) | GitHub OIDC provider + deploy role restricted to `repo:<owner>/<repo>:ref:refs/heads/main` and `environment:aws` | – (role ARN is an Output, stored as repo variable `AWS_DEPLOY_ROLE_ARN`) |
+| 0 | `github-oidc.yaml` | `msk-ei-github-oidc` (once, optional) | GitHub OIDC provider + deploy role trusted only for `repo:<owner>/<repo>:environment:aws` (protect the `aws` environment in GitHub: required reviewer, branch `main`) | – (role ARN is an Output, stored as repo variable `AWS_DEPLOY_ROLE_ARN`) |
 | 1 | `artifacts.yaml` | `artifacts` | S3 bucket for Lambda jars and the Connect plugin zip. Versioning off, public access blocked, SSE-S3. Emptied by teardown before delete. | `ArtifactsBucket` |
 | 2 | `network.yaml` | `network` | VPC 10.40.0.0/16, 2 private subnets (2 AZs), 1 public subnet + IGW + **one NAT gateway**, S3 gateway endpoint (free). SGs below. | `VpcId`, `PrivateSubnet1`, `PrivateSubnet2`, `ClientSecurityGroup`, `MskSecurityGroup`, `DbSecurityGroup` |
 | 3 | `msk.yaml` | `msk` | MSK cluster (`ClusterType` provisioned\|serverless), IAM auth only, TLS in transit. For provisioned: `AWS::MSK::Configuration` (see below), Kafka version param, EBS 10 GiB, broker logs to CloudWatch (7 days). | `ClusterArn` |
@@ -35,11 +35,11 @@ this file disagree, this file wins; change it first, then the code.
 | 6 | `database.yaml` | `database` | RDS PostgreSQL 16 `db.t4g.micro`, single-AZ, 20 GiB gp3, parameter group `rds.logical_replication=1`, own `AWS::SecretsManager::Secret` (generated password, user `erp`), not public, deletion protection off, `DeleteAutomatedBackups: true`, no final snapshot (`DeletionPolicy: Delete`). Custom resource (infra-bootstrap `DbInitHandler`) runs the SQL from `infra/postgres/init/01-schema.sql` (bundled). | `DbEndpoint`, `DbSecretArn` |
 | 7 | `ecr.yaml` | `ecr` | ECR repos `${EnvName}-msk-ei/stream-processor`, `/delivery-service`, `/downstream-mock`, `EmptyOnDelete: true`, scan on push, lifecycle keep last 5. | `RepoStreamProcessor`, `RepoDeliveryService`, `RepoDownstreamMock` (repository URIs) |
 | 8 | `msk-connect.yaml` | `msk-connect` | `AWS::KafkaConnect::CustomPlugin` (zip in artifacts bucket), `WorkerConfiguration`, `Connector` (Kafka Connect 3.7.x, provisioned 1 MCU × 1 worker), service execution role, worker logs to CloudWatch (7 days). | – |
-| 9 | `ingress.yaml` | `ingress` | API Gateway REST API `POST /events` (Lambda proxy, API key required, usage plan 10 rps / burst 20 / 10 000 per day), Lambda Java 21 in the private subnets, HMAC secret (`AWS::SecretsManager::Secret`, generated), explicit log groups (7 days), alarms: API 5XX, Lambda errors, Lambda throttles. | `ApiUrl` (Output), `ApiKeyId` (Output) |
+| 9 | `ingress.yaml` | `ingress` | API Gateway REST API `POST /events` (Lambda proxy, API key required, usage plan 10 rps / burst 20 / 10 000 per day), Lambda Java 21 in the private subnets, HMAC secret (`AWS::SecretsManager::Secret`, generated), explicit log groups (7 days), alarms: API 5XX, Lambda errors, Lambda throttles. | `ApiUrl` (Output), `ApiKeyId` (Output). API Gateway's CloudWatch Logs role is one setting per account and region: `ConfigureApiGatewayAccountRole` defaults to `false`; `deploy.sh` sets it to `true` only when the account has no role yet, so other projects' APIs are never affected. |
 | 10 | `processing.yaml` | `processing` | ECS cluster, Fargate services `stream-processor` and `delivery-service` (+ `downstream-mock` sidecar container in the delivery task), desired count 1, private subnets, no public IP, task roles, log groups (7 days). | `EcsClusterName` |
-| 11 | `observability.yaml` | `observability` | CloudWatch dashboard (ingress rate/5XX, Lambda errors/duration, consumer lag, DLQ messages in), alarms DLQ messages > 0 and consumer lag > threshold, SNS topic with email subscription (parameter). | – |
+| 11 | `observability.yaml` | `observability` | CloudWatch dashboard (ingress rate/5XX, Lambda errors/duration, consumer lag, bytes in per topic incl. DLQ), alarms DLQ `BytesInPerSec` > 0 and consumer lag > threshold. All used MSK metrics are DEFAULT level (free): per-topic `BytesInPerSec` (Cluster Name, Broker ID, Topic) and `SumOffsetLag`/`MaxOffsetLag` (Cluster Name, Consumer Group, Topic); the cluster keeps `EnhancedMonitoring: DEFAULT`, SNS topic with email subscription (parameter). | – |
 
-Teardown deletes in reverse order (11 → 1), empties the artifacts bucket and deletes the Glue schemas registered by the
+Deploy order in `deploy.sh` puts **observability (11) before ingress (9)**: the ingress alarms publish to the observability SNS topic (passed as `AlarmTopicArn`). Teardown deletes processing, ingress, observability, then 8 → 1, empties the artifacts bucket and deletes the Glue schemas registered by the
 script before their stacks. The budget and OIDC stacks are kept (free) unless `--all` is given.
 
 ### Why NAT and not VPC endpoints (ADR 0005)
@@ -167,7 +167,7 @@ Same connector settings as `infra/connect/orders-source.local.json`, plus:
 2. Within 120 s, the delivery-service log group contains a log line with that `eventId` and HTTP status 200
    (`aws logs filter-log-events`). This proves ingress → MSK → stream-processor → canonical topic → delivery.
 3. CDC: invoke the `DbInitHandler` Lambda with `{"action":"smoke-order"}` (inserts, updates and deletes one order) and
-   expect three delivery log lines for `/downstream/orders` within 180 s.
+   expect three delivery log lines with path `/orders` within 180 s (delivery logs the path relative to `DOWNSTREAM_URL`).
 Exit non-zero on any failure; print what was checked.
 
 ## Hard rules

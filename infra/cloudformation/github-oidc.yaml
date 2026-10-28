@@ -1,0 +1,153 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  msk-event-integration - GitHub Actions OIDC provider and deploy role (account-level, deployed once, optional).
+  The role can only be assumed by one GitHub environment of one repository.
+
+Parameters:
+  GitHubOwner:
+    Type: String
+    Description: GitHub user or organisation that owns the repository.
+  GitHubRepo:
+    Type: String
+    Default: msk-event-integration
+    Description: Repository name.
+  GitHubEnvironment:
+    Type: String
+    Default: aws
+    Description: GitHub environment allowed to assume the role (configure required reviewers on it).
+  ExistingOidcProviderArn:
+    Type: String
+    Default: ''
+    Description: >-
+      ARN of an already existing token.actions.githubusercontent.com OIDC provider in this account
+      (an account can have only one). Leave empty to create it.
+
+Conditions:
+  CreateProvider: !Equals [!Ref ExistingOidcProviderArn, '']
+
+Resources:
+  GitHubOidcProvider:
+    Type: AWS::IAM::OIDCProvider
+    Condition: CreateProvider
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList:
+        - sts.amazonaws.com
+      Tags:
+        - { Key: Project, Value: msk-event-integration }
+
+  DeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: msk-ei-github-deploy
+      MaxSessionDuration: 7200
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action: sts:AssumeRoleWithWebIdentity
+            Principal:
+              Federated: !If [CreateProvider, !GetAtt GitHubOidcProvider.Arn, !Ref ExistingOidcProviderArn]
+            Condition:
+              StringEquals:
+                'token.actions.githubusercontent.com:aud': sts.amazonaws.com
+                # Only jobs running in the GitHub environment (with its approval rules) of this repository.
+                'token.actions.githubusercontent.com:sub': !Sub 'repo:${GitHubOwner}/${GitHubRepo}:environment:${GitHubEnvironment}'
+      # Broad on purpose: the role deploys and tears down the whole stack set (network, MSK, RDS, ECS, Lambda...).
+      # Scoping is by resource name where the service allows it (stacks, roles, buckets, secrets). Services whose
+      # create calls cannot be scoped by name are granted on "*", limited to that service. See README.
+      Policies:
+        - PolicyName: deploy-and-teardown
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: CloudFormationOnProjectStacks
+                Effect: Allow
+                Action: cloudformation:*
+                Resource: !Sub 'arn:${AWS::Partition}:cloudformation:*:${AWS::AccountId}:stack/*-msk-ei-*/*'
+              - Sid: CloudFormationGlobal
+                Effect: Allow
+                Action:
+                  - cloudformation:ValidateTemplate
+                  - cloudformation:ListStacks
+                  - cloudformation:GetTemplateSummary
+                Resource: '*'
+              - Sid: RolesNamedForTheProject
+                Effect: Allow
+                Action:
+                  - iam:CreateRole
+                  - iam:DeleteRole
+                  - iam:GetRole
+                  - iam:UpdateRole
+                  - iam:UpdateAssumeRolePolicy
+                  - iam:TagRole
+                  - iam:UntagRole
+                  - iam:PassRole
+                  - iam:PutRolePolicy
+                  - iam:DeleteRolePolicy
+                  - iam:GetRolePolicy
+                  - iam:AttachRolePolicy
+                  - iam:DetachRolePolicy
+                  - iam:ListAttachedRolePolicies
+                  - iam:ListRolePolicies
+                Resource: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/*-msk-ei-*'
+              - Sid: ServiceLinkedRoles
+                Effect: Allow
+                Action: iam:CreateServiceLinkedRole
+                Resource: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/aws-service-role/*'
+              - Sid: NetworkAndEc2
+                Effect: Allow
+                Action: ec2:*
+                Resource: '*'
+              - Sid: MskAndConnect
+                Effect: Allow
+                Action:
+                  - kafka:*
+                  - kafkaconnect:*
+                Resource: '*'
+              - Sid: Rds
+                Effect: Allow
+                Action: rds:*
+                Resource: '*'
+              - Sid: ContainersFunctionsApi
+                Effect: Allow
+                Action:
+                  - ecs:*
+                  - ecr:*
+                  - lambda:*
+                  - apigateway:*
+                  - application-autoscaling:*
+                Resource: '*'
+              - Sid: GlueRegistry
+                Effect: Allow
+                Action: glue:*
+                Resource: '*'
+              - Sid: SecretsOfProject
+                Effect: Allow
+                Action: secretsmanager:*
+                Resource: !Sub 'arn:${AWS::Partition}:secretsmanager:*:${AWS::AccountId}:secret:*-msk-ei-*'
+              - Sid: SecretsGenerator
+                Effect: Allow
+                Action: secretsmanager:GetRandomPassword
+                Resource: '*'
+              - Sid: BucketsOfProject
+                Effect: Allow
+                Action: s3:*
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:s3:::*-msk-ei-*'
+                  - !Sub 'arn:${AWS::Partition}:s3:::*-msk-ei-*/*'
+              - Sid: ObservabilityAndNotifications
+                Effect: Allow
+                Action:
+                  - logs:*
+                  - cloudwatch:*
+                  - sns:*
+                Resource: '*'
+      Tags:
+        - { Key: Project, Value: msk-event-integration }
+
+
+Outputs:
+  DeployRoleArn:
+    Description: Store as the repository variable AWS_DEPLOY_ROLE_ARN.
+    Value: !GetAtt DeployRole.Arn

@@ -1,0 +1,243 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: msk-event-integration - SNS alarm topic, CloudWatch dashboard and alarms (DLQ, consumer lag).
+
+Parameters:
+  EnvName:
+    Type: String
+    Default: dev
+    AllowedPattern: '[a-z][a-z0-9-]{1,15}'
+    Description: Environment name; prefix of every resource.
+  AlarmEmail:
+    Type: String
+    Description: E-mail address subscribed to the alarm topic (the subscription must be confirmed from the mailbox).
+    AllowedPattern: '[^@\s]+@[^@\s]+'
+  LagThreshold:
+    Type: Number
+    Default: 1000
+    MinValue: 1
+    Description: Consumer lag (messages summed over the group's topics) that raises an alarm when exceeded for 10 minutes.
+
+# Metrics need MSK EnhancedMonitoring >= PER_TOPIC_PER_PARTITION on the cluster:
+#  - BytesInPerSec by Topic (dimensions Cluster Name, Broker ID, Topic) is a DEFAULT-level (free) metric, so the
+#    cluster keeps EnhancedMonitoring DEFAULT. MessagesInPerSec per topic would need the paid PER_TOPIC_PER_BROKER.
+#    Consumer lag (SumOffsetLag/MaxOffsetLag by Consumer Group, Topic) is DEFAULT too.
+#    Source: https://docs.aws.amazon.com/msk/latest/developerguide/metrics-details.html (checked 2026-10-27).
+#  - SumOffsetLag / MaxOffsetLag by Consumer Group + Topic are PER_TOPIC_PER_PARTITION.
+# Serverless clusters publish none of these under AWS/Kafka. Broker ids 1 and 2 match the 2-broker provisioned
+# cluster of the contract; the per-broker series are added with metric math because topic metrics have no
+# cluster-wide aggregate.
+
+Resources:
+  AlarmTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub '${EnvName}-msk-ei-alarms'
+      Subscription:
+        - Protocol: email
+          Endpoint: !Ref AlarmEmail
+      Tags:
+        - {Key: Project, Value: msk-event-integration}
+        - {Key: Env, Value: !Ref EnvName}
+
+  # CloudWatch alarms (also those of other stacks) may publish to the topic.
+  AlarmTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      Topics: [!Ref AlarmTopic]
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowCloudWatchAlarms
+            Effect: Allow
+            Principal:
+              Service: cloudwatch.amazonaws.com
+            Action: sns:Publish
+            Resource: !Ref AlarmTopic
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+
+  # DLQ: any message written in 5 minutes (sum of the per-second rate samples over both brokers).
+  DlqAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${EnvName}-msk-ei-dlq-messages'
+      AlarmDescription: Messages were written to integration.dlq.
+      ComparisonOperator: GreaterThanThreshold
+      Threshold: 0
+      EvaluationPeriods: 1
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlarmTopic]
+      Metrics:
+        - Id: b1
+          ReturnData: false
+          MetricStat:
+            Period: 300
+            Stat: Sum
+            Metric:
+              Namespace: AWS/Kafka
+              MetricName: BytesInPerSec
+              Dimensions:
+                - {Name: Cluster Name, Value: !Select [1, !Split ['/', !ImportValue {'Fn::Sub': '${EnvName}-msk-ei-ClusterArn'}]]}
+                - {Name: Broker ID, Value: '1'}
+                - {Name: Topic, Value: integration.dlq}
+        - Id: b2
+          ReturnData: false
+          MetricStat:
+            Period: 300
+            Stat: Sum
+            Metric:
+              Namespace: AWS/Kafka
+              MetricName: BytesInPerSec
+              Dimensions:
+                - {Name: Cluster Name, Value: !Select [1, !Split ['/', !ImportValue {'Fn::Sub': '${EnvName}-msk-ei-ClusterArn'}]]}
+                - {Name: Broker ID, Value: '2'}
+                - {Name: Topic, Value: integration.dlq}
+        - Id: total
+          Label: DLQ messages
+          ReturnData: true
+          Expression: b1 + b2
+      Tags:
+        - {Key: Project, Value: msk-event-integration}
+        - {Key: Env, Value: !Ref EnvName}
+
+  # stream-processor lag: input topics sf.change-events.raw and erp.public.orders.
+  StreamProcessorLagAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${EnvName}-msk-ei-lag-stream-processor'
+      AlarmDescription: Consumer group stream-processor is behind by more than the threshold for 10 minutes.
+      ComparisonOperator: GreaterThanThreshold
+      Threshold: !Ref LagThreshold
+      EvaluationPeriods: 2
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlarmTopic]
+      Metrics:
+        - Id: l1
+          ReturnData: false
+          MetricStat:
+            Period: 300
+            Stat: Maximum
+            Metric:
+              Namespace: AWS/Kafka
+              MetricName: SumOffsetLag
+              Dimensions:
+                - {Name: Cluster Name, Value: !Select [1, !Split ['/', !ImportValue {'Fn::Sub': '${EnvName}-msk-ei-ClusterArn'}]]}
+                - {Name: Consumer Group, Value: stream-processor}
+                - {Name: Topic, Value: sf.change-events.raw}
+        - Id: l2
+          ReturnData: false
+          MetricStat:
+            Period: 300
+            Stat: Maximum
+            Metric:
+              Namespace: AWS/Kafka
+              MetricName: SumOffsetLag
+              Dimensions:
+                - {Name: Cluster Name, Value: !Select [1, !Split ['/', !ImportValue {'Fn::Sub': '${EnvName}-msk-ei-ClusterArn'}]]}
+                - {Name: Consumer Group, Value: stream-processor}
+                - {Name: Topic, Value: erp.public.orders}
+        - Id: total
+          Label: stream-processor lag
+          ReturnData: true
+          Expression: l1 + l2
+      Tags:
+        - {Key: Project, Value: msk-event-integration}
+        - {Key: Env, Value: !Ref EnvName}
+
+  # delivery-service lag: canonical topics (retry topics are read by the separate group delivery-service-retry).
+  DeliveryLagAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${EnvName}-msk-ei-lag-delivery-service'
+      AlarmDescription: Consumer group delivery-service is behind by more than the threshold for 10 minutes.
+      ComparisonOperator: GreaterThanThreshold
+      Threshold: !Ref LagThreshold
+      EvaluationPeriods: 2
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlarmTopic]
+      Metrics:
+        - Id: l1
+          ReturnData: false
+          MetricStat:
+            Period: 300
+            Stat: Maximum
+            Metric:
+              Namespace: AWS/Kafka
+              MetricName: SumOffsetLag
+              Dimensions:
+                - {Name: Cluster Name, Value: !Select [1, !Split ['/', !ImportValue {'Fn::Sub': '${EnvName}-msk-ei-ClusterArn'}]]}
+                - {Name: Consumer Group, Value: delivery-service}
+                - {Name: Topic, Value: integration.account.v1}
+        - Id: l2
+          ReturnData: false
+          MetricStat:
+            Period: 300
+            Stat: Maximum
+            Metric:
+              Namespace: AWS/Kafka
+              MetricName: SumOffsetLag
+              Dimensions:
+                - {Name: Cluster Name, Value: !Select [1, !Split ['/', !ImportValue {'Fn::Sub': '${EnvName}-msk-ei-ClusterArn'}]]}
+                - {Name: Consumer Group, Value: delivery-service}
+                - {Name: Topic, Value: integration.order.v1}
+        - Id: total
+          Label: delivery-service lag
+          ReturnData: true
+          Expression: l1 + l2
+      Tags:
+        - {Key: Project, Value: msk-event-integration}
+        - {Key: Env, Value: !Ref EnvName}
+
+  Dashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Sub '${EnvName}-msk-ei'
+      DashboardBody: !Sub
+        - |
+          {
+            "widgets": [
+              {"type":"metric","x":0,"y":0,"width":8,"height":6,"properties":{"title":"API Gateway requests and 5XX","region":"${AWS::Region}","stat":"Sum","period":60,"view":"timeSeries","metrics":[
+                ["AWS/ApiGateway","Count","ApiName","${EnvName}-msk-ei-ingress","Stage","v1"],
+                ["AWS/ApiGateway","5XXError","ApiName","${EnvName}-msk-ei-ingress","Stage","v1"]]}},
+              {"type":"metric","x":8,"y":0,"width":8,"height":6,"properties":{"title":"API Gateway latency (ms)","region":"${AWS::Region}","period":60,"view":"timeSeries","metrics":[
+                ["AWS/ApiGateway","Latency","ApiName","${EnvName}-msk-ei-ingress","Stage","v1",{"stat":"Average"}],
+                ["AWS/ApiGateway","Latency","ApiName","${EnvName}-msk-ei-ingress","Stage","v1",{"stat":"p99"}]]}},
+              {"type":"metric","x":16,"y":0,"width":8,"height":6,"properties":{"title":"Ingress Lambda invocations and errors","region":"${AWS::Region}","stat":"Sum","period":60,"view":"timeSeries","metrics":[
+                ["AWS/Lambda","Invocations","FunctionName","${EnvName}-msk-ei-ingress"],
+                ["AWS/Lambda","Errors","FunctionName","${EnvName}-msk-ei-ingress"]]}},
+              {"type":"metric","x":0,"y":6,"width":8,"height":6,"properties":{"title":"Ingress Lambda duration (ms)","region":"${AWS::Region}","period":60,"view":"timeSeries","metrics":[
+                ["AWS/Lambda","Duration","FunctionName","${EnvName}-msk-ei-ingress",{"stat":"Average"}],
+                ["AWS/Lambda","Duration","FunctionName","${EnvName}-msk-ei-ingress",{"stat":"Maximum"}]]}},
+              {"type":"metric","x":8,"y":6,"width":16,"height":6,"properties":{"title":"Messages in per second (both brokers)","region":"${AWS::Region}","period":60,"stat":"Average","view":"timeSeries","metrics":[
+                ["AWS/Kafka","BytesInPerSec","Cluster Name","${ClusterName}","Broker ID","1","Topic","sf.change-events.raw",{"id":"r1","visible":false}],
+                ["AWS/Kafka","BytesInPerSec","Cluster Name","${ClusterName}","Broker ID","2","Topic","sf.change-events.raw",{"id":"r2","visible":false}],
+                [{"expression":"r1+r2","label":"sf.change-events.raw","id":"rt"}],
+                ["AWS/Kafka","BytesInPerSec","Cluster Name","${ClusterName}","Broker ID","1","Topic","integration.account.v1",{"id":"a1","visible":false}],
+                ["AWS/Kafka","BytesInPerSec","Cluster Name","${ClusterName}","Broker ID","2","Topic","integration.account.v1",{"id":"a2","visible":false}],
+                [{"expression":"a1+a2","label":"integration.account.v1","id":"at"}],
+                ["AWS/Kafka","BytesInPerSec","Cluster Name","${ClusterName}","Broker ID","1","Topic","integration.dlq",{"id":"d1","visible":false}],
+                ["AWS/Kafka","BytesInPerSec","Cluster Name","${ClusterName}","Broker ID","2","Topic","integration.dlq",{"id":"d2","visible":false}],
+                [{"expression":"d1+d2","label":"integration.dlq","id":"dt"}]]}},
+              {"type":"metric","x":0,"y":12,"width":12,"height":6,"properties":{"title":"Consumer lag stream-processor (SumOffsetLag)","region":"${AWS::Region}","period":60,"stat":"Maximum","view":"timeSeries","metrics":[
+                ["AWS/Kafka","SumOffsetLag","Cluster Name","${ClusterName}","Consumer Group","stream-processor","Topic","sf.change-events.raw"],
+                ["AWS/Kafka","SumOffsetLag","Cluster Name","${ClusterName}","Consumer Group","stream-processor","Topic","erp.public.orders"],
+                ["AWS/Kafka","MaxOffsetLag","Cluster Name","${ClusterName}","Consumer Group","stream-processor","Topic","sf.change-events.raw"],
+                ["AWS/Kafka","MaxOffsetLag","Cluster Name","${ClusterName}","Consumer Group","stream-processor","Topic","erp.public.orders"]]}},
+              {"type":"metric","x":12,"y":12,"width":12,"height":6,"properties":{"title":"Consumer lag delivery-service (SumOffsetLag)","region":"${AWS::Region}","period":60,"stat":"Maximum","view":"timeSeries","metrics":[
+                ["AWS/Kafka","SumOffsetLag","Cluster Name","${ClusterName}","Consumer Group","delivery-service","Topic","integration.account.v1"],
+                ["AWS/Kafka","SumOffsetLag","Cluster Name","${ClusterName}","Consumer Group","delivery-service","Topic","integration.order.v1"],
+                ["AWS/Kafka","MaxOffsetLag","Cluster Name","${ClusterName}","Consumer Group","delivery-service","Topic","integration.account.v1"],
+                ["AWS/Kafka","MaxOffsetLag","Cluster Name","${ClusterName}","Consumer Group","delivery-service","Topic","integration.order.v1"]]}}
+            ]
+          }
+        - ClusterName: !Select [1, !Split ['/', !ImportValue {'Fn::Sub': '${EnvName}-msk-ei-ClusterArn'}]]
+
+Outputs:
+  AlarmTopicArn:
+    Description: Pass as AlarmTopicArn to the ingress stack to route its alarms here.
+    Value: !Ref AlarmTopic
+    Export:
+      Name: !Sub '${EnvName}-msk-ei-AlarmTopicArn'
+  DashboardName:
+    Value: !Ref Dashboard

@@ -1,0 +1,235 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: msk-event-integration - MSK Connect (Debezium PostgreSQL -> erp.public.orders, Glue Schema Registry Avro).
+
+Parameters:
+  EnvName:
+    Type: String
+    Default: dev
+    AllowedPattern: '[a-z][a-z0-9-]{1,15}'
+    Description: Environment name; prefix of every resource.
+  BootstrapServers:
+    Type: String
+    Description: MSK IAM bootstrap servers (BootstrapBrokerStringSaslIam), read by deploy.sh after the msk stack.
+  PluginArtifactKey:
+    Type: String
+    Description: S3 key of the Connect plugin zip in the artifacts bucket, e.g. connect/debezium-postgres-glue-<gitsha>.zip.
+
+Resources:
+  ConnectorLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub '/msk-connect/${EnvName}-msk-ei/orders-source'
+      RetentionInDays: 7
+      Tags:
+        - {Key: Project, Value: msk-event-integration}
+        - {Key: Env, Value: !Ref EnvName}
+
+  ExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${EnvName}-msk-ei-connect-execution'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: kafkaconnect.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+      Policies:
+        - PolicyName: connect
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: ClusterAccess
+                Effect: Allow
+                Action:
+                  - kafka-cluster:Connect
+                  - kafka-cluster:DescribeCluster
+                  - kafka-cluster:WriteDataIdempotently
+                Resource:
+                  - Fn::ImportValue: !Sub '${EnvName}-msk-ei-ClusterArn'
+              - Sid: OrdersTopic
+                Effect: Allow
+                Action:
+                  - kafka-cluster:DescribeTopic
+                  - kafka-cluster:WriteData
+                Resource:
+                  - !Sub ['arn:${AWS::Partition}:kafka:${AWS::Region}:${AWS::AccountId}:topic/${CP}/erp.public.orders', {CP: !Select [1, !Split ['cluster/', {'Fn::ImportValue': {'Fn::Sub': '${EnvName}-msk-ei-ClusterArn'}}]]}]
+              # Internal topics of the connector (offsets, config, status), named by MSK Connect.
+              - Sid: ConnectInternalTopics
+                Effect: Allow
+                Action:
+                  - kafka-cluster:CreateTopic
+                  - kafka-cluster:DescribeTopic
+                  - kafka-cluster:ReadData
+                  - kafka-cluster:WriteData
+                Resource:
+                  - !Sub ['arn:${AWS::Partition}:kafka:${AWS::Region}:${AWS::AccountId}:topic/${CP}/__amazon_msk_connect_*', {CP: !Select [1, !Split ['cluster/', {'Fn::ImportValue': {'Fn::Sub': '${EnvName}-msk-ei-ClusterArn'}}]]}]
+                  - !Sub ['arn:${AWS::Partition}:kafka:${AWS::Region}:${AWS::AccountId}:topic/${CP}/connect-*', {CP: !Select [1, !Split ['cluster/', {'Fn::ImportValue': {'Fn::Sub': '${EnvName}-msk-ei-ClusterArn'}}]]}]
+              - Sid: ConnectGroups
+                Effect: Allow
+                Action:
+                  - kafka-cluster:AlterGroup
+                  - kafka-cluster:DescribeGroup
+                Resource:
+                  - !Sub ['arn:${AWS::Partition}:kafka:${AWS::Region}:${AWS::AccountId}:group/${CP}/__amazon_msk_connect_*', {CP: !Select [1, !Split ['cluster/', {'Fn::ImportValue': {'Fn::Sub': '${EnvName}-msk-ei-ClusterArn'}}]]}]
+                  - !Sub ['arn:${AWS::Partition}:kafka:${AWS::Region}:${AWS::AccountId}:group/${CP}/connect-*', {CP: !Select [1, !Split ['cluster/', {'Fn::ImportValue': {'Fn::Sub': '${EnvName}-msk-ei-ClusterArn'}}]]}]
+              # Debezium converter: read schemas, register its own envelope schema (erp.public.orders*) only.
+              - Sid: GlueRead
+                Effect: Allow
+                Action:
+                  - glue:GetRegistry
+                  - glue:GetSchema
+                  - glue:GetSchemaVersion
+                  - glue:GetSchemaByDefinition
+                  - glue:QuerySchemaVersionMetadata
+                Resource:
+                  - !ImportValue
+                    Fn::Sub: '${EnvName}-msk-ei-RegistryArn'
+                  - !Sub
+                    - 'arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:schema/${Registry}/*'
+                    - Registry: !ImportValue
+                        Fn::Sub: '${EnvName}-msk-ei-RegistryName'
+              - Sid: GlueRegister
+                Effect: Allow
+                Action:
+                  - glue:CreateSchema
+                  - glue:RegisterSchemaVersion
+                  - glue:PutSchemaVersionMetadata
+                Resource:
+                  - !ImportValue
+                    Fn::Sub: '${EnvName}-msk-ei-RegistryArn'
+                  - !Sub
+                    - 'arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:schema/${Registry}/erp.public.orders*'
+                    - Registry: !ImportValue
+                        Fn::Sub: '${EnvName}-msk-ei-RegistryName'
+              - Sid: PluginRead
+                Effect: Allow
+                Action: s3:GetObject
+                Resource: !Sub
+                  - 'arn:${AWS::Partition}:s3:::${Bucket}/${PluginArtifactKey}'
+                  - Bucket: !ImportValue
+                      Fn::Sub: '${EnvName}-msk-ei-ArtifactsBucket'
+              - Sid: Logs
+                Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !GetAtt ConnectorLogGroup.Arn
+      Tags:
+        - {Key: Project, Value: msk-event-integration}
+        - {Key: Env, Value: !Ref EnvName}
+
+  Plugin:
+    Type: AWS::KafkaConnect::CustomPlugin
+    Properties:
+      Name: !Sub '${EnvName}-msk-ei-debezium-postgres-glue'
+      ContentType: ZIP
+      Location:
+        S3Location:
+          BucketArn: !Sub
+            - 'arn:${AWS::Partition}:s3:::${Bucket}'
+            - Bucket: !ImportValue
+                Fn::Sub: '${EnvName}-msk-ei-ArtifactsBucket'
+          FileKey: !Ref PluginArtifactKey
+      Tags:
+        - {Key: Project, Value: msk-event-integration}
+        - {Key: Env, Value: !Ref EnvName}
+
+  # MSK Connect only accepts a small set of worker properties (converters, offset flush, ...); topic names for
+  # offsets/config/status are managed by the service and cannot be set. The connector repeats the converters.
+  WorkerConfiguration:
+    Type: AWS::KafkaConnect::WorkerConfiguration
+    Properties:
+      Name: !Sub '${EnvName}-msk-ei-worker'
+      PropertiesFileContent: !Base64 |
+        key.converter=org.apache.kafka.connect.json.JsonConverter
+        key.converter.schemas.enable=false
+        value.converter=com.amazonaws.services.schemaregistry.kafkaconnect.AWSKafkaAvroConverter
+      Tags:
+        - {Key: Project, Value: msk-event-integration}
+        - {Key: Env, Value: !Ref EnvName}
+
+  Connector:
+    Type: AWS::KafkaConnect::Connector
+    Properties:
+      ConnectorName: !Sub '${EnvName}-msk-ei-orders-source'
+      KafkaConnectVersion: 3.7.x
+      ServiceExecutionRoleArn: !GetAtt ExecutionRole.Arn
+      Capacity:
+        ProvisionedCapacity:
+          McuCount: 1
+          WorkerCount: 1
+      KafkaCluster:
+        ApacheKafkaCluster:
+          BootstrapServers: !Ref BootstrapServers
+          Vpc:
+            SecurityGroups:
+              - !ImportValue
+                Fn::Sub: '${EnvName}-msk-ei-ClientSecurityGroup'
+            Subnets:
+              - !ImportValue
+                Fn::Sub: '${EnvName}-msk-ei-PrivateSubnet1'
+              - !ImportValue
+                Fn::Sub: '${EnvName}-msk-ei-PrivateSubnet2'
+      KafkaClusterClientAuthentication:
+        AuthenticationType: IAM
+      KafkaClusterEncryptionInTransit:
+        EncryptionType: TLS
+      Plugins:
+        - CustomPlugin:
+            CustomPluginArn: !Ref Plugin
+            Revision: !GetAtt Plugin.Revision
+      WorkerConfiguration:
+        WorkerConfigurationArn: !Ref WorkerConfiguration
+        Revision: !GetAtt WorkerConfiguration.Revision
+      LogDelivery:
+        WorkerLogDelivery:
+          CloudWatchLogs:
+            Enabled: true
+            LogGroup: !Ref ConnectorLogGroup
+      # Same settings as infra/connect/orders-source.local.json. Differences: target is RDS, the password comes from
+      # Secrets Manager via a dynamic reference (resolved at deploy time, visible to whoever can describe the
+      # connector - documented trade-off in CONTRACT.md), JSON key converter and Glue Avro value converter.
+      ConnectorConfiguration:
+        connector.class: io.debezium.connector.postgresql.PostgresConnector
+        tasks.max: '1'
+        database.hostname: !ImportValue
+          Fn::Sub: '${EnvName}-msk-ei-DbEndpoint'
+        database.port: '5432'
+        database.user: erp
+        database.password: !Sub
+          - '{{resolve:secretsmanager:${SecretArn}:SecretString:password}}'
+          - SecretArn: !ImportValue
+              Fn::Sub: '${EnvName}-msk-ei-DbSecretArn'
+        database.dbname: erp
+        plugin.name: pgoutput
+        publication.name: dbz_orders_pub
+        publication.autocreate.mode: disabled
+        slot.name: dbz_orders_slot
+        topic.prefix: erp
+        table.include.list: public.orders
+        decimal.handling.mode: string
+        time.precision.mode: connect
+        tombstones.on.delete: 'true'
+        snapshot.mode: initial
+        key.converter: org.apache.kafka.connect.json.JsonConverter
+        key.converter.schemas.enable: 'false'
+        value.converter: com.amazonaws.services.schemaregistry.kafkaconnect.AWSKafkaAvroConverter
+        value.converter.region: !Ref AWS::Region
+        value.converter.registry.name: !ImportValue
+          Fn::Sub: '${EnvName}-msk-ei-RegistryName'
+        value.converter.schemaAutoRegistrationEnabled: 'true'
+        value.converter.avroRecordType: GENERIC_RECORD
+        value.converter.compatibility: BACKWARD
+
+Outputs:
+  ConnectorArn:
+    Value: !Ref Connector
+  ConnectorLogGroupName:
+    Value: !Ref ConnectorLogGroup

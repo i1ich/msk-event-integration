@@ -1,0 +1,410 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: msk-event-integration - ECS Fargate services stream-processor and delivery-service (with downstream-mock sidecar).
+
+Parameters:
+  EnvName:
+    Type: String
+    Default: dev
+    AllowedPattern: '[a-z][a-z0-9-]{1,15}'
+    Description: Environment name; prefix of every resource.
+  BootstrapServers:
+    Type: String
+    Description: MSK IAM bootstrap servers (BootstrapBrokerStringSaslIam), read by deploy.sh after the msk stack.
+  StreamProcessorImage:
+    Type: String
+    Description: Full image URI of the stream-processor, e.g. <RepoStreamProcessor>:<gitsha>.
+  DeliveryServiceImage:
+    Type: String
+    Description: Full image URI of the delivery-service, e.g. <RepoDeliveryService>:<gitsha>.
+  DownstreamMockImage:
+    Type: String
+    Description: Full image URI of the downstream mock (WireMock), e.g. <RepoDownstreamMock>:<gitsha>.
+  DesiredCount:
+    Type: Number
+    Default: 1
+    MinValue: 0
+    Description: Desired task count of each service.
+
+Resources:
+  Cluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Sub '${EnvName}-msk-ei'
+      # Container Insights costs money per metric; plain CloudWatch service metrics are enough for the demo.
+      ClusterSettings:
+        - Name: containerInsights
+          Value: disabled
+      Tags:
+        - {Key: Project, Value: msk-event-integration}
+        - {Key: Env, Value: !Ref EnvName}
+
+  StreamProcessorLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub '/ecs/${EnvName}-msk-ei/stream-processor'
+      RetentionInDays: 7
+      Tags:
+        - {Key: Project, Value: msk-event-integration}
+        - {Key: Env, Value: !Ref EnvName}
+
+  DeliveryLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub '/ecs/${EnvName}-msk-ei/delivery-service'
+      RetentionInDays: 7
+      Tags:
+        - {Key: Project, Value: msk-event-integration}
+        - {Key: Env, Value: !Ref EnvName}
+
+  # Pulls images from ECR and writes container logs. Separate from the task roles (application permissions).
+  TaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${EnvName}-msk-ei-ecs-execution'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+      ManagedPolicyArns:
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy'
+      Tags:
+        - {Key: Project, Value: msk-event-integration}
+        - {Key: Env, Value: !Ref EnvName}
+
+  StreamProcessorTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${EnvName}-msk-ei-stream-processor-task'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+      Policies:
+        - PolicyName: stream-processor
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: ClusterAccess
+                Effect: Allow
+                Action:
+                  - kafka-cluster:Connect
+                  - kafka-cluster:DescribeCluster
+                  - kafka-cluster:WriteDataIdempotently
+                Resource:
+                  - Fn::ImportValue: !Sub '${EnvName}-msk-ei-ClusterArn'
+              - Sid: ReadInputTopics
+                Effect: Allow
+                Action:
+                  - kafka-cluster:DescribeTopic
+                  - kafka-cluster:ReadData
+                Resource:
+                  - !Sub ['arn:${AWS::Partition}:kafka:${AWS::Region}:${AWS::AccountId}:topic/${CP}/sf.change-events.raw', {CP: !Select [1, !Split ['cluster/', {'Fn::ImportValue': {'Fn::Sub': '${EnvName}-msk-ei-ClusterArn'}}]]}]
+                  - !Sub ['arn:${AWS::Partition}:kafka:${AWS::Region}:${AWS::AccountId}:topic/${CP}/erp.public.orders', {CP: !Select [1, !Split ['cluster/', {'Fn::ImportValue': {'Fn::Sub': '${EnvName}-msk-ei-ClusterArn'}}]]}]
+              - Sid: WriteOutputTopics
+                Effect: Allow
+                Action:
+                  - kafka-cluster:DescribeTopic
+                  - kafka-cluster:WriteData
+                Resource:
+                  - !Sub ['arn:${AWS::Partition}:kafka:${AWS::Region}:${AWS::AccountId}:topic/${CP}/integration.account.v1', {CP: !Select [1, !Split ['cluster/', {'Fn::ImportValue': {'Fn::Sub': '${EnvName}-msk-ei-ClusterArn'}}]]}]
+                  - !Sub ['arn:${AWS::Partition}:kafka:${AWS::Region}:${AWS::AccountId}:topic/${CP}/integration.order.v1', {CP: !Select [1, !Split ['cluster/', {'Fn::ImportValue': {'Fn::Sub': '${EnvName}-msk-ei-ClusterArn'}}]]}]
+                  - !Sub ['arn:${AWS::Partition}:kafka:${AWS::Region}:${AWS::AccountId}:topic/${CP}/integration.dlq', {CP: !Select [1, !Split ['cluster/', {'Fn::ImportValue': {'Fn::Sub': '${EnvName}-msk-ei-ClusterArn'}}]]}]
+              # Kafka Streams internal topics (changelog / repartition), prefix = application.id.
+              - Sid: StreamsInternalTopics
+                Effect: Allow
+                Action:
+                  - kafka-cluster:CreateTopic
+                  - kafka-cluster:DescribeTopic
+                  - kafka-cluster:ReadData
+                  - kafka-cluster:WriteData
+                  - kafka-cluster:DeleteTopic
+                Resource:
+                  - !Sub ['arn:${AWS::Partition}:kafka:${AWS::Region}:${AWS::AccountId}:topic/${CP}/stream-processor-*', {CP: !Select [1, !Split ['cluster/', {'Fn::ImportValue': {'Fn::Sub': '${EnvName}-msk-ei-ClusterArn'}}]]}]
+              - Sid: ConsumerGroup
+                Effect: Allow
+                Action:
+                  - kafka-cluster:AlterGroup
+                  - kafka-cluster:DescribeGroup
+                Resource:
+                  - !Sub ['arn:${AWS::Partition}:kafka:${AWS::Region}:${AWS::AccountId}:group/${CP}/stream-processor', {CP: !Select [1, !Split ['cluster/', {'Fn::ImportValue': {'Fn::Sub': '${EnvName}-msk-ei-ClusterArn'}}]]}]
+              # exactly_once_v2: the Streams producer uses transactional ids starting with the application id.
+              - Sid: TransactionalIds
+                Effect: Allow
+                Action:
+                  - kafka-cluster:DescribeTransactionalId
+                  - kafka-cluster:AlterTransactionalId
+                Resource:
+                  - !Sub ['arn:${AWS::Partition}:kafka:${AWS::Region}:${AWS::AccountId}:transactional-id/${CP}/stream-processor-*', {CP: !Select [1, !Split ['cluster/', {'Fn::ImportValue': {'Fn::Sub': '${EnvName}-msk-ei-ClusterArn'}}]]}]
+              - Sid: GlueRead
+                Effect: Allow
+                Action:
+                  - glue:GetRegistry
+                  - glue:GetSchema
+                  - glue:GetSchemaVersion
+                  - glue:GetSchemaByDefinition
+                  - glue:QuerySchemaVersionMetadata
+                Resource:
+                  - !ImportValue
+                    Fn::Sub: '${EnvName}-msk-ei-RegistryArn'
+                  - !Sub
+                    - 'arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:schema/${Registry}/*'
+                    - Registry: !ImportValue
+                        Fn::Sub: '${EnvName}-msk-ei-RegistryName'
+      Tags:
+        - {Key: Project, Value: msk-event-integration}
+        - {Key: Env, Value: !Ref EnvName}
+
+  DeliveryTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${EnvName}-msk-ei-delivery-service-task'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+      Policies:
+        - PolicyName: delivery-service
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: ClusterAccess
+                Effect: Allow
+                Action:
+                  - kafka-cluster:Connect
+                  - kafka-cluster:DescribeCluster
+                  - kafka-cluster:WriteDataIdempotently
+                Resource:
+                  - Fn::ImportValue: !Sub '${EnvName}-msk-ei-ClusterArn'
+              - Sid: ReadTopics
+                Effect: Allow
+                Action:
+                  - kafka-cluster:DescribeTopic
+                  - kafka-cluster:ReadData
+                Resource:
+                  - !Sub ['arn:${AWS::Partition}:kafka:${AWS::Region}:${AWS::AccountId}:topic/${CP}/integration.account.v1', {CP: !Select [1, !Split ['cluster/', {'Fn::ImportValue': {'Fn::Sub': '${EnvName}-msk-ei-ClusterArn'}}]]}]
+                  - !Sub ['arn:${AWS::Partition}:kafka:${AWS::Region}:${AWS::AccountId}:topic/${CP}/integration.order.v1', {CP: !Select [1, !Split ['cluster/', {'Fn::ImportValue': {'Fn::Sub': '${EnvName}-msk-ei-ClusterArn'}}]]}]
+                  - !Sub ['arn:${AWS::Partition}:kafka:${AWS::Region}:${AWS::AccountId}:topic/${CP}/integration.retry.*', {CP: !Select [1, !Split ['cluster/', {'Fn::ImportValue': {'Fn::Sub': '${EnvName}-msk-ei-ClusterArn'}}]]}]
+              - Sid: WriteTopics
+                Effect: Allow
+                Action:
+                  - kafka-cluster:DescribeTopic
+                  - kafka-cluster:WriteData
+                Resource:
+                  - !Sub ['arn:${AWS::Partition}:kafka:${AWS::Region}:${AWS::AccountId}:topic/${CP}/integration.retry.*', {CP: !Select [1, !Split ['cluster/', {'Fn::ImportValue': {'Fn::Sub': '${EnvName}-msk-ei-ClusterArn'}}]]}]
+                  - !Sub ['arn:${AWS::Partition}:kafka:${AWS::Region}:${AWS::AccountId}:topic/${CP}/integration.dlq', {CP: !Select [1, !Split ['cluster/', {'Fn::ImportValue': {'Fn::Sub': '${EnvName}-msk-ei-ClusterArn'}}]]}]
+              - Sid: ConsumerGroups
+                Effect: Allow
+                Action:
+                  - kafka-cluster:AlterGroup
+                  - kafka-cluster:DescribeGroup
+                Resource:
+                  - !Sub ['arn:${AWS::Partition}:kafka:${AWS::Region}:${AWS::AccountId}:group/${CP}/delivery-service', {CP: !Select [1, !Split ['cluster/', {'Fn::ImportValue': {'Fn::Sub': '${EnvName}-msk-ei-ClusterArn'}}]]}]
+                  - !Sub ['arn:${AWS::Partition}:kafka:${AWS::Region}:${AWS::AccountId}:group/${CP}/delivery-service-retry', {CP: !Select [1, !Split ['cluster/', {'Fn::ImportValue': {'Fn::Sub': '${EnvName}-msk-ei-ClusterArn'}}]]}]
+              - Sid: GlueRead
+                Effect: Allow
+                Action:
+                  - glue:GetRegistry
+                  - glue:GetSchema
+                  - glue:GetSchemaVersion
+                  - glue:GetSchemaByDefinition
+                  - glue:QuerySchemaVersionMetadata
+                Resource:
+                  - !ImportValue
+                    Fn::Sub: '${EnvName}-msk-ei-RegistryArn'
+                  - !Sub
+                    - 'arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:schema/${Registry}/*'
+                    - Registry: !ImportValue
+                        Fn::Sub: '${EnvName}-msk-ei-RegistryName'
+      Tags:
+        - {Key: Project, Value: msk-event-integration}
+        - {Key: Env, Value: !Ref EnvName}
+
+  StreamProcessorTask:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub '${EnvName}-msk-ei-stream-processor'
+      RequiresCompatibilities: [FARGATE]
+      NetworkMode: awsvpc
+      Cpu: '512'
+      Memory: '1024'
+      ExecutionRoleArn: !GetAtt TaskExecutionRole.Arn
+      TaskRoleArn: !GetAtt StreamProcessorTaskRole.Arn
+      RuntimePlatform:
+        OperatingSystemFamily: LINUX
+        CpuArchitecture: X86_64
+      ContainerDefinitions:
+        - Name: stream-processor
+          Image: !Ref StreamProcessorImage
+          Essential: true
+          Environment:
+            - {Name: KAFKA_BOOTSTRAP_SERVERS, Value: !Ref BootstrapServers}
+            - {Name: KAFKA_SECURITY, Value: iam}
+            - {Name: SCHEMA_REGISTRY_TYPE, Value: glue}
+            - Name: GLUE_REGISTRY_NAME
+              Value: !ImportValue
+                Fn::Sub: '${EnvName}-msk-ei-RegistryName'
+            - {Name: AWS_REGION, Value: !Ref 'AWS::Region'}
+            - {Name: SCHEMA_AUTO_REGISTER, Value: 'false'}
+            - {Name: STREAMS_APPLICATION_ID, Value: stream-processor}
+            - {Name: STREAMS_REPLICATION_FACTOR, Value: '-1'}
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref StreamProcessorLogGroup
+              awslogs-region: !Ref 'AWS::Region'
+              awslogs-stream-prefix: stream-processor
+      Tags:
+        - {Key: Project, Value: msk-event-integration}
+        - {Key: Env, Value: !Ref EnvName}
+
+  # One task, two containers. awsvpc shares the network namespace, so the app reaches the mock on localhost:8080.
+  DeliveryTask:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub '${EnvName}-msk-ei-delivery-service'
+      RequiresCompatibilities: [FARGATE]
+      NetworkMode: awsvpc
+      Cpu: '512'
+      Memory: '1024'
+      ExecutionRoleArn: !GetAtt TaskExecutionRole.Arn
+      TaskRoleArn: !GetAtt DeliveryTaskRole.Arn
+      RuntimePlatform:
+        OperatingSystemFamily: LINUX
+        CpuArchitecture: X86_64
+      ContainerDefinitions:
+        - Name: downstream-mock
+          Image: !Ref DownstreamMockImage
+          Essential: true
+          Memory: 256
+          PortMappings:
+            - {ContainerPort: 8080, Protocol: tcp}
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref DeliveryLogGroup
+              awslogs-region: !Ref 'AWS::Region'
+              awslogs-stream-prefix: downstream-mock
+        - Name: delivery-service
+          Image: !Ref DeliveryServiceImage
+          Essential: true
+          Memory: 768
+          # START (not HEALTHY): the mock image has no health check; the service retries failed POSTs anyway.
+          DependsOn:
+            - {ContainerName: downstream-mock, Condition: START}
+          Environment:
+            - {Name: KAFKA_BOOTSTRAP_SERVERS, Value: !Ref BootstrapServers}
+            - {Name: KAFKA_SECURITY, Value: iam}
+            - {Name: SCHEMA_REGISTRY_TYPE, Value: glue}
+            - Name: GLUE_REGISTRY_NAME
+              Value: !ImportValue
+                Fn::Sub: '${EnvName}-msk-ei-RegistryName'
+            - {Name: AWS_REGION, Value: !Ref 'AWS::Region'}
+            - {Name: SCHEMA_AUTO_REGISTER, Value: 'false'}
+            - {Name: DOWNSTREAM_URL, Value: 'http://localhost:8080/downstream'}
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref DeliveryLogGroup
+              awslogs-region: !Ref 'AWS::Region'
+              awslogs-stream-prefix: delivery-service
+      Tags:
+        - {Key: Project, Value: msk-event-integration}
+        - {Key: Env, Value: !Ref EnvName}
+
+  StreamProcessorService:
+    Type: AWS::ECS::Service
+    Properties:
+      ServiceName: stream-processor
+      Cluster: !Ref Cluster
+      LaunchType: FARGATE
+      DesiredCount: !Ref DesiredCount
+      TaskDefinition: !Ref StreamProcessorTask
+      # Rolling update with 1 task: new task starts first (200%), old one stops after (a rebalance, not an outage).
+      DeploymentConfiguration:
+        MinimumHealthyPercent: 100
+        MaximumPercent: 200
+        DeploymentCircuitBreaker:
+          Enable: true
+          Rollback: true
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: DISABLED
+          SecurityGroups:
+            - !ImportValue
+              Fn::Sub: '${EnvName}-msk-ei-ClientSecurityGroup'
+          Subnets:
+            - !ImportValue
+              Fn::Sub: '${EnvName}-msk-ei-PrivateSubnet1'
+            - !ImportValue
+              Fn::Sub: '${EnvName}-msk-ei-PrivateSubnet2'
+      EnableECSManagedTags: true
+      PropagateTags: SERVICE
+      Tags:
+        - {Key: Project, Value: msk-event-integration}
+        - {Key: Env, Value: !Ref EnvName}
+
+  DeliveryService:
+    Type: AWS::ECS::Service
+    Properties:
+      ServiceName: delivery-service
+      Cluster: !Ref Cluster
+      LaunchType: FARGATE
+      DesiredCount: !Ref DesiredCount
+      TaskDefinition: !Ref DeliveryTask
+      DeploymentConfiguration:
+        MinimumHealthyPercent: 100
+        MaximumPercent: 200
+        DeploymentCircuitBreaker:
+          Enable: true
+          Rollback: true
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: DISABLED
+          SecurityGroups:
+            - !ImportValue
+              Fn::Sub: '${EnvName}-msk-ei-ClientSecurityGroup'
+          Subnets:
+            - !ImportValue
+              Fn::Sub: '${EnvName}-msk-ei-PrivateSubnet1'
+            - !ImportValue
+              Fn::Sub: '${EnvName}-msk-ei-PrivateSubnet2'
+      EnableECSManagedTags: true
+      PropagateTags: SERVICE
+      Tags:
+        - {Key: Project, Value: msk-event-integration}
+        - {Key: Env, Value: !Ref EnvName}
+
+Outputs:
+  EcsClusterName:
+    Value: !Ref Cluster
+    Export:
+      Name: !Sub '${EnvName}-msk-ei-EcsClusterName'
+  DeliveryLogGroupName:
+    Description: Log group the smoke test greps for the eventId.
+    Value: !Ref DeliveryLogGroup
+    Export:
+      Name: !Sub '${EnvName}-msk-ei-DeliveryLogGroup'
+  StreamProcessorLogGroupName:
+    Value: !Ref StreamProcessorLogGroup

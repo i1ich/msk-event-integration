@@ -1,0 +1,383 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: msk-event-integration - ingress (API Gateway REST API POST /events -> Lambda in the VPC -> MSK), HMAC secret, alarms.
+
+Parameters:
+  EnvName:
+    Type: String
+    Default: dev
+    AllowedPattern: '[a-z][a-z0-9-]{1,15}'
+    Description: Environment name; prefix of every resource.
+  BootstrapServers:
+    Type: String
+    Description: MSK IAM bootstrap servers (BootstrapBrokerStringSaslIam), read by deploy.sh after the msk stack.
+  IngressArtifactKey:
+    Type: String
+    Description: S3 key of the ingress Lambda jar in the artifacts bucket, e.g. lambda/ingress-lambda-<gitsha>.jar.
+  SnapStart:
+    Type: String
+    Default: 'Off'
+    AllowedValues: ['Off', PublishedVersions]
+    Description: Lambda SnapStart. PublishedVersions publishes a version and invokes the function through the alias "live".
+  AlarmTopicArn:
+    Type: String
+    Default: ''
+    Description: Optional SNS topic ARN for the alarm actions (empty = alarms without actions).
+  ConfigureApiGatewayAccountRole:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+    Description: >-
+      API Gateway needs an account-level CloudWatch Logs role (one per account and region) to write access logs.
+      'true' creates it here; use 'false' if the account already has one (then it is left untouched).
+
+Conditions:
+  SnapStartOn: !Equals [!Ref SnapStart, PublishedVersions]
+  HasAlarmTopic: !Not [!Equals [!Ref AlarmTopicArn, '']]
+  CreateAccountRole: !Equals [!Ref ConfigureApiGatewayAccountRole, 'true']
+
+Resources:
+  # ---------------------------------------------------------------- secrets
+  # Plain generated string (no SecretStringTemplate): the secret string IS the raw HMAC key.
+  HmacSecret:
+    Type: AWS::SecretsManager::Secret
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      Name: !Sub '${EnvName}-msk-ei/ingress-hmac'
+      Description: HMAC-SHA256 key used to verify X-Signature on POST /events.
+      GenerateSecretString:
+        PasswordLength: 48
+        ExcludePunctuation: true
+      Tags:
+        - {Key: Project, Value: msk-event-integration}
+        - {Key: Env, Value: !Ref EnvName}
+
+  # ---------------------------------------------------------------- Lambda
+  FunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${EnvName}-msk-ei-ingress'
+      RetentionInDays: 7
+      Tags:
+        - {Key: Project, Value: msk-event-integration}
+        - {Key: Env, Value: !Ref EnvName}
+
+  FunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${EnvName}-msk-ei-ingress-lambda'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      # ENI management for the VPC attachment (and basic logging).
+      ManagedPolicyArns:
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole'
+      Policies:
+        - PolicyName: ingress
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: ClusterAccess
+                Effect: Allow
+                Action:
+                  - kafka-cluster:Connect
+                  - kafka-cluster:DescribeCluster
+                  - kafka-cluster:WriteDataIdempotently
+                Resource:
+                  - Fn::ImportValue: !Sub '${EnvName}-msk-ei-ClusterArn'
+              - Sid: RawTopic
+                Effect: Allow
+                Action:
+                  - kafka-cluster:WriteData
+                  - kafka-cluster:DescribeTopic
+                Resource:
+                  - !Sub ['arn:${AWS::Partition}:kafka:${AWS::Region}:${AWS::AccountId}:topic/${CP}/sf.change-events.raw', {CP: !Select [1, !Split ['cluster/', {'Fn::ImportValue': {'Fn::Sub': '${EnvName}-msk-ei-ClusterArn'}}]]}]
+              - Sid: HmacSecret
+                Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Ref HmacSecret
+              - Sid: Logs
+                Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !GetAtt FunctionLogGroup.Arn
+      Tags:
+        - {Key: Project, Value: msk-event-integration}
+        - {Key: Env, Value: !Ref EnvName}
+
+  Function:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${EnvName}-msk-ei-ingress'
+      Runtime: java21
+      Handler: io.github.i1ich.mskei.ingress.IngressHandler::handleRequest
+      MemorySize: 1024
+      Timeout: 15
+      Role: !GetAtt FunctionRole.Arn
+      Code:
+        S3Bucket: !ImportValue
+          Fn::Sub: '${EnvName}-msk-ei-ArtifactsBucket'
+        S3Key: !Ref IngressArtifactKey
+      # SnapStart only applies to published versions; the alias below points at the version.
+      SnapStart: !If
+        - SnapStartOn
+        - ApplyOn: PublishedVersions
+        - !Ref AWS::NoValue
+      LoggingConfig:
+        LogGroup: !Ref FunctionLogGroup
+      VpcConfig:
+        SecurityGroupIds:
+          - !ImportValue
+            Fn::Sub: '${EnvName}-msk-ei-ClientSecurityGroup'
+        SubnetIds:
+          - !ImportValue
+            Fn::Sub: '${EnvName}-msk-ei-PrivateSubnet1'
+          - !ImportValue
+            Fn::Sub: '${EnvName}-msk-ei-PrivateSubnet2'
+      Environment:
+        Variables:
+          KAFKA_BOOTSTRAP_SERVERS: !Ref BootstrapServers
+          KAFKA_SECURITY: iam
+          INGRESS_HMAC_SECRET_ARN: !Ref HmacSecret
+      Tags:
+        - {Key: Project, Value: msk-event-integration}
+        - {Key: Env, Value: !Ref EnvName}
+
+  FunctionVersion:
+    Type: AWS::Lambda::Version
+    Condition: SnapStartOn
+    Properties:
+      FunctionName: !Ref Function
+
+  FunctionAlias:
+    Type: AWS::Lambda::Alias
+    Condition: SnapStartOn
+    Properties:
+      FunctionName: !Ref Function
+      FunctionVersion: !GetAtt FunctionVersion.Version
+      Name: live
+
+  # With SnapStart the API invokes the alias (qualified ARN); without it, the unqualified function.
+  InvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !If [SnapStartOn, !Ref FunctionAlias, !Ref Function]
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${Api}/*/POST/events'
+
+  # ---------------------------------------------------------------- API Gateway
+  AccessLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub '/apigateway/${EnvName}-msk-ei-ingress/access'
+      RetentionInDays: 7
+      Tags:
+        - {Key: Project, Value: msk-event-integration}
+        - {Key: Env, Value: !Ref EnvName}
+
+  # Account-wide setting (not per stack). It is never reset when this stack is deleted; harmless and free.
+  ApiGatewayCloudWatchRole:
+    Type: AWS::IAM::Role
+    Condition: CreateAccountRole
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: apigateway.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AmazonAPIGatewayPushToCloudWatchLogs'
+      Tags:
+        - {Key: Project, Value: msk-event-integration}
+        - {Key: Env, Value: !Ref EnvName}
+
+  ApiGatewayAccount:
+    Type: AWS::ApiGateway::Account
+    Condition: CreateAccountRole
+    Properties:
+      CloudWatchRoleArn: !GetAtt ApiGatewayCloudWatchRole.Arn
+
+  Api:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: !Sub '${EnvName}-msk-ei-ingress'
+      Description: Salesforce change events ingress.
+      EndpointConfiguration:
+        Types: [REGIONAL]
+      Tags:
+        - {Key: Project, Value: msk-event-integration}
+        - {Key: Env, Value: !Ref EnvName}
+
+  EventsResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref Api
+      ParentId: !GetAtt Api.RootResourceId
+      PathPart: events
+
+  PostEventsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref Api
+      ResourceId: !Ref EventsResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      ApiKeyRequired: true
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub
+          - 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${Target}/invocations'
+          - Target: !If [SnapStartOn, !Ref FunctionAlias, !GetAtt Function.Arn]
+
+  # Deployment is replaced when the method changes (hash in the logical id is not needed: the description changes
+  # with the key of the jar, which forces a new deployment on every new build).
+  Deployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn: PostEventsMethod
+    Properties:
+      RestApiId: !Ref Api
+      Description: !Sub 'ingress ${IngressArtifactKey} ${SnapStart}'
+
+  Stage:
+    Type: AWS::ApiGateway::Stage
+    Properties:
+      RestApiId: !Ref Api
+      DeploymentId: !Ref Deployment
+      StageName: v1
+      # Conditional implicit dependency: access logs need the account-level role to exist first (a plain DependsOn
+      # on a conditional resource is rejected by cfn-lint).
+      Description: !If [CreateAccountRole, !Sub 'logs via ${ApiGatewayAccount}', 'logs via existing account role']
+      AccessLogSetting:
+        DestinationArn: !GetAtt AccessLogGroup.Arn
+        Format: '{"requestId":"$context.requestId","ip":"$context.identity.sourceIp","requestTime":"$context.requestTime","method":"$context.httpMethod","path":"$context.path","status":"$context.status","responseLength":"$context.responseLength","integrationLatency":"$context.integrationLatency","responseLatency":"$context.responseLatency","apiKeyId":"$context.identity.apiKeyId"}'
+      MethodSettings:
+        - ResourcePath: '/*'
+          HttpMethod: '*'
+          MetricsEnabled: true
+          LoggingLevel: 'OFF'
+      Tags:
+        - {Key: Project, Value: msk-event-integration}
+        - {Key: Env, Value: !Ref EnvName}
+
+  UsagePlan:
+    Type: AWS::ApiGateway::UsagePlan
+    DependsOn: Stage
+    Properties:
+      UsagePlanName: !Sub '${EnvName}-msk-ei-ingress'
+      Description: 10 rps, burst 20, 10000 requests per day.
+      ApiStages:
+        - ApiId: !Ref Api
+          Stage: v1
+      Throttle:
+        RateLimit: 10
+        BurstLimit: 20
+      Quota:
+        Limit: 10000
+        Period: DAY
+      Tags:
+        - {Key: Project, Value: msk-event-integration}
+        - {Key: Env, Value: !Ref EnvName}
+
+  # No Value: API Gateway generates the key; read it with `aws apigateway get-api-key --include-value`.
+  ApiKey:
+    Type: AWS::ApiGateway::ApiKey
+    Properties:
+      Name: !Sub '${EnvName}-msk-ei-ingress'
+      Enabled: true
+      Tags:
+        - {Key: Project, Value: msk-event-integration}
+        - {Key: Env, Value: !Ref EnvName}
+
+  UsagePlanKey:
+    Type: AWS::ApiGateway::UsagePlanKey
+    Properties:
+      KeyId: !Ref ApiKey
+      KeyType: API_KEY
+      UsagePlanId: !Ref UsagePlan
+
+  # ---------------------------------------------------------------- alarms
+  Api5xxAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${EnvName}-msk-ei-ingress-api-5xx'
+      AlarmDescription: The ingress API returned at least one 5XX in 5 minutes.
+      Namespace: AWS/ApiGateway
+      MetricName: 5XXError
+      Dimensions:
+        - {Name: ApiName, Value: !Sub '${EnvName}-msk-ei-ingress'}
+        - {Name: Stage, Value: v1}
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: !If [HasAlarmTopic, [!Ref AlarmTopicArn], !Ref AWS::NoValue]
+      Tags:
+        - {Key: Project, Value: msk-event-integration}
+        - {Key: Env, Value: !Ref EnvName}
+
+  LambdaErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${EnvName}-msk-ei-ingress-lambda-errors'
+      AlarmDescription: The ingress Lambda reported at least one error in 5 minutes.
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - {Name: FunctionName, Value: !Ref Function}
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: !If [HasAlarmTopic, [!Ref AlarmTopicArn], !Ref AWS::NoValue]
+      Tags:
+        - {Key: Project, Value: msk-event-integration}
+        - {Key: Env, Value: !Ref EnvName}
+
+  LambdaThrottlesAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${EnvName}-msk-ei-ingress-lambda-throttles'
+      AlarmDescription: The ingress Lambda was throttled at least once in 5 minutes.
+      Namespace: AWS/Lambda
+      MetricName: Throttles
+      Dimensions:
+        - {Name: FunctionName, Value: !Ref Function}
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: !If [HasAlarmTopic, [!Ref AlarmTopicArn], !Ref AWS::NoValue]
+      Tags:
+        - {Key: Project, Value: msk-event-integration}
+        - {Key: Env, Value: !Ref EnvName}
+
+Outputs:
+  ApiUrl:
+    Description: Base URL; POST {ApiUrl}/events with x-api-key and X-Signature.
+    Value: !Sub 'https://${Api}.execute-api.${AWS::Region}.${AWS::URLSuffix}/v1'
+  ApiKeyId:
+    Description: API key id (get the value with aws apigateway get-api-key --include-value).
+    Value: !Ref ApiKey
+  HmacSecretArn:
+    Value: !Ref HmacSecret
+  IngressFunctionName:
+    Value: !Ref Function

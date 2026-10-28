@@ -1,0 +1,74 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: msk-event-integration - ECR repositories for the stream-processor, delivery-service and downstream-mock images.
+
+Parameters:
+  EnvName:
+    Type: String
+    Default: dev
+    AllowedPattern: '[a-z][a-z0-9-]{1,15}'
+    Description: Environment name; prefix of every resource.
+
+Resources:
+  # EmptyOnDelete lets the stack delete a repository that still holds images (teardown must not leave anything behind).
+  # Scan on push is free for basic scanning. Lifecycle keeps the repositories small (storage is billed per GB-month).
+  RepoStreamProcessorResource:
+    Type: AWS::ECR::Repository
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      RepositoryName: !Sub '${EnvName}-msk-ei/stream-processor'
+      EmptyOnDelete: true
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      LifecyclePolicy:
+        LifecyclePolicyText: '{"rules":[{"rulePriority":1,"description":"Keep the last 5 images","selection":{"tagStatus":"any","countType":"imageCountMoreThan","countNumber":5},"action":{"type":"expire"}}]}'
+      Tags:
+        - {Key: Project, Value: msk-event-integration}
+        - {Key: Env, Value: !Ref EnvName}
+
+  RepoDeliveryServiceResource:
+    Type: AWS::ECR::Repository
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      RepositoryName: !Sub '${EnvName}-msk-ei/delivery-service'
+      EmptyOnDelete: true
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      LifecyclePolicy:
+        LifecyclePolicyText: '{"rules":[{"rulePriority":1,"description":"Keep the last 5 images","selection":{"tagStatus":"any","countType":"imageCountMoreThan","countNumber":5},"action":{"type":"expire"}}]}'
+      Tags:
+        - {Key: Project, Value: msk-event-integration}
+        - {Key: Env, Value: !Ref EnvName}
+
+  RepoDownstreamMockResource:
+    Type: AWS::ECR::Repository
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      RepositoryName: !Sub '${EnvName}-msk-ei/downstream-mock'
+      EmptyOnDelete: true
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      LifecyclePolicy:
+        LifecyclePolicyText: '{"rules":[{"rulePriority":1,"description":"Keep the last 5 images","selection":{"tagStatus":"any","countType":"imageCountMoreThan","countNumber":5},"action":{"type":"expire"}}]}'
+      Tags:
+        - {Key: Project, Value: msk-event-integration}
+        - {Key: Env, Value: !Ref EnvName}
+
+Outputs:
+  RepoStreamProcessor:
+    Description: Repository URI of the stream-processor image.
+    Value: !GetAtt RepoStreamProcessorResource.RepositoryUri
+    Export:
+      Name: !Sub '${EnvName}-msk-ei-RepoStreamProcessor'
+  RepoDeliveryService:
+    Description: Repository URI of the delivery-service image.
+    Value: !GetAtt RepoDeliveryServiceResource.RepositoryUri
+    Export:
+      Name: !Sub '${EnvName}-msk-ei-RepoDeliveryService'
+  RepoDownstreamMock:
+    Description: Repository URI of the downstream-mock (WireMock) image.
+    Value: !GetAtt RepoDownstreamMockResource.RepositoryUri
+    Export:
+      Name: !Sub '${EnvName}-msk-ei-RepoDownstreamMock'

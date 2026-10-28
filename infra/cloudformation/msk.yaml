@@ -1,0 +1,141 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  msk-event-integration - Amazon MSK cluster, provisioned (2 x kafka.t3.small, default) or serverless,
+  IAM authentication only, TLS in transit.
+
+Parameters:
+  EnvName:
+    Type: String
+    Default: dev
+    AllowedPattern: '[a-z][a-z0-9-]{1,15}'
+    Description: Environment name; prefix of every stack, resource and export.
+  ClusterType:
+    Type: String
+    Default: provisioned
+    AllowedValues: [provisioned, serverless]
+    Description: >-
+      provisioned (default) or serverless. MSK Serverless is not available in every region (not in sa-east-1);
+      deploy.sh refuses it where unsupported.
+  BrokerInstanceType:
+    Type: String
+    Default: kafka.t3.small
+    Description: Broker instance type (provisioned only).
+  KafkaVersion:
+    Type: String
+    Default: 3.9.x
+    Description: >-
+      Provisioned only. "3.9.x" is the ZooKeeper-based mode of Kafka 3.9; "3.9.x.kraft" selects KRaft.
+      See README for the choice.
+  BrokerVolumeSizeGiB:
+    Type: Number
+    Default: 10
+    MinValue: 1
+    Description: EBS volume per broker in GiB (provisioned only).
+
+Conditions:
+  IsProvisioned: !Equals [!Ref ClusterType, provisioned]
+  IsServerless: !Equals [!Ref ClusterType, serverless]
+
+Resources:
+  BrokerLogGroup:
+    Type: AWS::Logs::LogGroup
+    Condition: IsProvisioned
+    Properties:
+      LogGroupName: !Sub '/aws/msk/${EnvName}-msk-ei'
+      RetentionInDays: 7
+      Tags:
+        - { Key: Project, Value: msk-event-integration }
+        - { Key: Env, Value: !Ref EnvName }
+
+  # Custom configuration is mandatory with 2 brokers: MSK defaults assume 3+ brokers
+  # (replication factor 3 for internal topics, min ISR 2), which would make the transaction log and
+  # __consumer_offsets unusable and break exactly_once_v2 in Kafka Streams. min.insync.replicas=1 is a demo
+  # trade-off: production uses 3 brokers, RF 3, min ISR 2.
+  MskConfiguration:
+    Type: AWS::MSK::Configuration
+    Condition: IsProvisioned
+    Properties:
+      Name: !Sub '${EnvName}-msk-ei-2-brokers'
+      Description: Server properties for a 2-broker demo cluster.
+      KafkaVersionsList:
+        - !Ref KafkaVersion
+      ServerProperties: |
+        auto.create.topics.enable=false
+        default.replication.factor=2
+        min.insync.replicas=1
+        offsets.topic.replication.factor=2
+        transaction.state.log.replication.factor=2
+        transaction.state.log.min.isr=1
+        num.partitions=3
+
+  ProvisionedCluster:
+    Type: AWS::MSK::Cluster
+    Condition: IsProvisioned
+    Properties:
+      ClusterName: !Sub '${EnvName}-msk-ei'
+      KafkaVersion: !Ref KafkaVersion
+      NumberOfBrokerNodes: 2   # one per AZ / private subnet
+      BrokerNodeGroupInfo:
+        InstanceType: !Ref BrokerInstanceType
+        ClientSubnets:
+          - !ImportValue
+            Fn::Sub: '${EnvName}-msk-ei-PrivateSubnet1'
+          - !ImportValue
+            Fn::Sub: '${EnvName}-msk-ei-PrivateSubnet2'
+        SecurityGroups:
+          - !ImportValue
+            Fn::Sub: '${EnvName}-msk-ei-MskSecurityGroup'
+        StorageInfo:
+          EBSStorageInfo:
+            VolumeSize: !Ref BrokerVolumeSizeGiB
+      ConfigurationInfo:
+        Arn: !Ref MskConfiguration
+        Revision: !GetAtt MskConfiguration.LatestRevision.Revision
+      ClientAuthentication:
+        Sasl:
+          Iam:
+            Enabled: true
+        Unauthenticated:
+          Enabled: false
+      EncryptionInfo:
+        EncryptionInTransit:
+          ClientBroker: TLS
+          InCluster: true
+      EnhancedMonitoring: DEFAULT
+      LoggingInfo:
+        BrokerLogs:
+          CloudWatchLogs:
+            Enabled: true
+            LogGroup: !Ref BrokerLogGroup
+      Tags:
+        Project: msk-event-integration
+        Env: !Ref EnvName
+
+  ServerlessCluster:
+    Type: AWS::MSK::ServerlessCluster
+    Condition: IsServerless
+    Properties:
+      ClusterName: !Sub '${EnvName}-msk-ei'
+      VpcConfigs:
+        - SubnetIds:
+            - !ImportValue
+              Fn::Sub: '${EnvName}-msk-ei-PrivateSubnet1'
+            - !ImportValue
+              Fn::Sub: '${EnvName}-msk-ei-PrivateSubnet2'
+          SecurityGroups:
+            - !ImportValue
+              Fn::Sub: '${EnvName}-msk-ei-MskSecurityGroup'
+      ClientAuthentication:
+        Sasl:
+          Iam:
+            Enabled: true
+      Tags:
+        Project: msk-event-integration
+        Env: !Ref EnvName
+
+Outputs:
+  ClusterArn:
+    Description: ARN of the cluster (provisioned or serverless).
+    Value: !If [IsProvisioned, !Ref ProvisionedCluster, !Ref ServerlessCluster]
+    Export:
+      Name: !Sub '${EnvName}-msk-ei-ClusterArn'

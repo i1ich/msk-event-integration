@@ -73,7 +73,7 @@ the readable source. Re-check before each deploy; actual cost is recorded after 
 
 | Date (UTC) | Config | Deployed | Torn down | Teardown checklist done | Total cost | Notes |
 |---|---|---|---|---|---|---|
-| `TODO (M4)` | `TODO (M4)` | `TODO (M4)` | `TODO (M4)` | `TODO (M4)` | `TODO (M4)` | `TODO (M4)` |
+| 2026-10-28 | dev, sa-east-1, provisioned | artifacts, network only (02:03–02:13) | yes, 02:16 | yes (`check-leftovers.sh`; NAT `deleted`, no EIPs, no endpoints) | ≈ 0.02 USD (NAT ~10 min), covered by free-plan credits | Stopped at `msk`: `SubscriptionRequiredException` — the account is on the AWS **Free plan**, which does not include Amazon MSK. Budgets `msk-ei-monthly-cost` (15 USD) and `msk-ei-daily-cost` (3 USD) created before the run. |
 
 ## Cost by option
 

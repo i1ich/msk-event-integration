@@ -58,6 +58,15 @@ The final summary of `deploy.sh` prints the API URL and the dashboard name (Clou
 
 ## What can go wrong
 
+### `The AWS Access Key Id needs a subscription for the service (Service: Kafka, 403)`
+
+The account is on the AWS **Free plan** (check: `aws freetier get-account-plan-state --region us-east-1`).
+The Free plan does not include Amazon MSK (and other services), so the `msk` stack fails at its first resource.
+Fix: upgrade the account to the Paid plan in the Billing console (owner action; remaining free-plan credits stay
+usable until they expire). Then run `scripts/teardown.sh dev` for the partial stacks and deploy again.
+Found on the first M4 run (2026-10-28); `deploy.sh` stops before creating anything else.
+
+
 - **Stack ends in `ROLLBACK_COMPLETE` / `CREATE_FAILED`.** The script prints the failed events. Fix the cause, delete the failed
   stack (`aws cloudformation delete-stack --stack-name dev-msk-ei-<name>`; a stack in `ROLLBACK_COMPLETE` cannot be updated),
   and re-run `deploy.sh --skip-build`. Finished stacks are no-ops.

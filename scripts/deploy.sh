@@ -100,6 +100,11 @@ fi
 docker info >/dev/null 2>&1 || die "docker daemon is not running"
 print_identity
 
+# The AWS Free plan does not include Amazon MSK: the msk stack would fail AFTER the NAT gateway already bills.
+PLAN="$(aws freetier get-account-plan-state --region us-east-1 --query accountPlanType --output text 2>/dev/null || echo unknown)"
+[ "$PLAN" != "FREE" ] || die "account is on the AWS Free plan, which does not include Amazon MSK. Upgrade to the Paid plan in the Billing console first (see docs/runbooks/deploy.md)."
+info "account plan: $PLAN"
+
 if [ "$BUDGET_CHECK" = "true" ]; then
   stack_exists "$BUDGET_STACK" || die "budget stack '$BUDGET_STACK' not found. Run scripts/create-budget.sh <email> first (or --no-budget-check)."
   info "budget stack present"

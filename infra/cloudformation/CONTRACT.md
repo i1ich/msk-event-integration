@@ -25,7 +25,7 @@ this file disagree, this file wins; change it first, then the code.
 
 | # | Template | Stack | Purpose | Exports (all prefixed `${EnvName}-msk-ei-`) |
 |---|---|---|---|---|
-| 0 | `budget.yaml` | `msk-ei-budget` (account-level, no EnvName) | AWS Budget, monthly cost limit (default 20 USD), email alerts at 80% actual / 100% forecast. Deployed FIRST, once. | – |
+| 0 | `budget.yaml` | `msk-ei-budget` (account-level, no EnvName) | AWS Budgets: monthly limit (default 15 USD, alerts at 80% actual / 100% forecast) and daily limit (default 3 USD, alert at 100% actual). Deployed FIRST, once. | – |
 | 0 | `github-oidc.yaml` | `msk-ei-github-oidc` (once, optional) | GitHub OIDC provider + deploy role trusted only for `repo:<owner>/<repo>:environment:aws` (protect the `aws` environment in GitHub: required reviewer, branch `main`) | – (role ARN is an Output, stored as repo variable `AWS_DEPLOY_ROLE_ARN`) |
 | 1 | `artifacts.yaml` | `artifacts` | S3 bucket for Lambda jars and the Connect plugin zip. Versioning off, public access blocked, SSE-S3. Emptied by teardown before delete. | `ArtifactsBucket` |
 | 2 | `network.yaml` | `network` | VPC 10.40.0.0/16, 2 private subnets (2 AZs), 1 public subnet + IGW + **one NAT gateway**, S3 gateway endpoint (free). SGs below. | `VpcId`, `PrivateSubnet1`, `PrivateSubnet2`, `ClientSecurityGroup`, `MskSecurityGroup`, `DbSecurityGroup` |

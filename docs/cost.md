@@ -7,7 +7,7 @@ the readable source. Re-check before each deploy; actual cost is recorded after 
 
 ## Guardrails (mandatory)
 
-1. **Create the AWS Budget first**, before any other AWS resource: `msk-ei-budget` (`infra/cloudformation/budget.yaml`), monthly limit $20, email at 80% actual and 100% forecast (per `CONTRACT.md`). `TODO (M4)`: record the date created.
+1. **Create the AWS Budget first**, before any other AWS resource: `msk-ei-budget` (`infra/cloudformation/budget.yaml`), monthly limit 15 USD (email at 80% actual and 100% forecast) plus `msk-ei-daily-cost`, 3 USD per day (email at 100% actual). Created 2026-10-28 with `scripts/create-budget.sh <email> 15 3`.
 2. **Deploy, demo, and tear down on the same day.** Do not leave MSK, RDS, NAT, or ECS running overnight.
 3. **Run the teardown checklist** in [runbooks/teardown.md](runbooks/teardown.md) after every session, and record that it was completed. Check for leftovers (NAT gateways, Elastic IPs, RDS instances, MSK clusters, ECS services, ECR images, CloudWatch log groups) before closing the session.
 4. **Record actual cost** in the table below once Cost Explorer data is available (usually after a day or more).
@@ -49,7 +49,7 @@ the readable source. Re-check before each deploy; actual cost is recorded after 
 | **Total** | | **≈ 0.55** |
 
 - **One demo run** (deploy ~1 h + demo ~1 h + teardown ~0.5–1 h, everything billed while it exists): ≈ 3 h × 0.55 ≈ **1.7 USD**.
-- **If teardown is forgotten:** ≈ 13 USD per day, ≈ 400 USD per month. The 20 USD budget is used up in about **36 hours**.
+- **If teardown is forgotten:** ≈ 13 USD per day, ≈ 400 USD per month. The daily budget (3 USD) alerts after about 5–6 hours; the monthly 15 USD is used up in about **27 hours**.
   This is why the budget comes first and `scripts/check-leftovers.sh` runs after every teardown.
 - Biggest items: MSK Connect (32%), MSK brokers (27%), NAT (18%). Cheapest way to shorten a run: create the
   connector last and delete it first.

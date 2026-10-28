@@ -17,12 +17,11 @@ Parameters:
     MinValue: 1
     Description: Consumer lag (messages summed over the group's topics) that raises an alarm when exceeded for 10 minutes.
 
-# Metrics need MSK EnhancedMonitoring >= PER_TOPIC_PER_PARTITION on the cluster:
+# All metrics used here are available at MSK EnhancedMonitoring DEFAULT (free):
 #  - BytesInPerSec by Topic (dimensions Cluster Name, Broker ID, Topic) is a DEFAULT-level (free) metric, so the
 #    cluster keeps EnhancedMonitoring DEFAULT. MessagesInPerSec per topic would need the paid PER_TOPIC_PER_BROKER.
 #    Consumer lag (SumOffsetLag/MaxOffsetLag by Consumer Group, Topic) is DEFAULT too.
 #    Source: https://docs.aws.amazon.com/msk/latest/developerguide/metrics-details.html (checked 2026-10-27).
-#  - SumOffsetLag / MaxOffsetLag by Consumer Group + Topic are PER_TOPIC_PER_PARTITION.
 # Serverless clusters publish none of these under AWS/Kafka. Broker ids 1 and 2 match the 2-broker provisioned
 # cluster of the contract; the per-broker series are added with metric math because topic metrics have no
 # cluster-wide aggregate.
@@ -209,7 +208,7 @@ Resources:
               {"type":"metric","x":0,"y":6,"width":8,"height":6,"properties":{"title":"Ingress Lambda duration (ms)","region":"${AWS::Region}","period":60,"view":"timeSeries","metrics":[
                 ["AWS/Lambda","Duration","FunctionName","${EnvName}-msk-ei-ingress",{"stat":"Average"}],
                 ["AWS/Lambda","Duration","FunctionName","${EnvName}-msk-ei-ingress",{"stat":"Maximum"}]]}},
-              {"type":"metric","x":8,"y":6,"width":16,"height":6,"properties":{"title":"Messages in per second (both brokers)","region":"${AWS::Region}","period":60,"stat":"Average","view":"timeSeries","metrics":[
+              {"type":"metric","x":8,"y":6,"width":16,"height":6,"properties":{"title":"Bytes in per second (both brokers)","region":"${AWS::Region}","period":60,"stat":"Average","view":"timeSeries","metrics":[
                 ["AWS/Kafka","BytesInPerSec","Cluster Name","${ClusterName}","Broker ID","1","Topic","sf.change-events.raw",{"id":"r1","visible":false}],
                 ["AWS/Kafka","BytesInPerSec","Cluster Name","${ClusterName}","Broker ID","2","Topic","sf.change-events.raw",{"id":"r2","visible":false}],
                 [{"expression":"r1+r2","label":"sf.change-events.raw","id":"rt"}],

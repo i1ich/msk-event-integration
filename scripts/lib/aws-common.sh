@@ -4,10 +4,23 @@
 # shellcheck shell=bash
 
 # Git Bash on Windows rewrites arguments that start with "/" (log group names, for example) before calling
-# aws.exe. Turn that off; it has no effect on Linux/macOS. Because of it, always pass LOCAL paths to the aws
-# CLI as relative paths (scripts cd to the repo root first).
-export MSYS_NO_PATHCONV=1
-export MSYS2_ARG_CONV_EXCL='*'
+# aws.exe. Turn that off for the aws CLI ONLY: exporting it globally breaks Maven and Java on Windows (they need
+# the converted paths). No effect on Linux/macOS. Pass LOCAL paths to the aws CLI as relative paths
+# (scripts cd to the repo root first).
+aws() { MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' command aws "$@"; }
+
+# glue create-schema, kafkaconnect and the SASL/IAM bootstrap broker field need a recent AWS CLI v2.
+MIN_AWS_CLI="2.13.0"
+require_aws_cli() {
+  local v
+  v="$(aws --version 2>&1 | sed -nE 's#^aws-cli/([0-9.]+).*##p')"
+  [ -n "$v" ] || die "aws CLI not found"
+  if [ "$(printf '%s
+%s
+' "$MIN_AWS_CLI" "$v" | sort -V | head -1)" != "$MIN_AWS_CLI" ]; then
+    die "aws CLI $v is too old (need >= $MIN_AWS_CLI): https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html"
+  fi
+}
 
 COMMON_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$COMMON_DIR/../.." && pwd)"
@@ -88,6 +101,7 @@ confirm() {
 
 # Prints the caller identity with the account id masked (last 4 digits only) and the region.
 print_identity() {
+  require_aws_cli
   local acct
   acct="$(aws sts get-caller-identity --query Account --output text)" || die "aws sts get-caller-identity failed (no valid credentials?)"
   info "AWS account: ********${acct: -4}   region: $AWS_REGION   env: $ENV_NAME"

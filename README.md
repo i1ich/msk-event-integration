@@ -39,8 +39,8 @@ flowchart LR
 |---|---|---|
 | M1 | Local platform: ingress to `sf.change-events.raw`; CDC to `erp.public.orders`; Avro schemas registered | Done |
 | M2 | Processing (Kafka Streams topologies A and B) and error handling (DLQ, retry topics, delivery service, replay-cli) | Done |
-| M3 | Tests and CI: Testcontainers, JaCoCo >= 80%, cfn-lint, schema compatibility check | Done locally (pending review; CI not run until the first push) |
-| M4 | AWS deploy and teardown (MSK, Glue Schema Registry, ECS Fargate, RDS), cost recorded | Planned |
+| M3 | Tests and CI: Testcontainers, JaCoCo >= 80%, cfn-lint, schema compatibility check | Done (CI green on GitHub) |
+| M4 | AWS deploy and teardown (sa-east-1: provisioned MSK, Glue Schema Registry, MSK Connect, ECS Fargate, RDS), cost recorded | Templates and scripts ready (cfn-lint clean); not deployed yet — see `infra/cloudformation/CONTRACT.md`, `docs/cost.md` |
 | M5 | Documentation and knowledge transfer | Planned |
 
 ## Quick start
